@@ -1,0 +1,13 @@
+[package]
+name = "goldstone-engine"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Parses received mail as hostile input, for Goldstone"
+
+[dependencies]
+# MIME parsing. Fuzzed, and iterative where a recursive parser would let a
+# deeply nested message exhaust the stack.
+mail-parser = "0.11"
+# HTML sanitizing for display — the library blackhole-engine already uses.
+ammonia = "4"

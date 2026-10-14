@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["crates/goldstone-engine", "crates/goldstone-engine-napi"]
+
+# Production build: inline across the engine / binding boundary. No
+# `panic = "abort"`: napi-rs turns a panic into a JavaScript exception, and
+# aborting would take the host application's process down with it.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

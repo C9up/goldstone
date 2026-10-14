@@ -1,0 +1,17 @@
+[package]
+name = "goldstone-engine-napi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "NAPI bindings for goldstone-engine"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3", features = ["napi4"] }
+napi-derive = { version = "3", features = ["type-def"] }
+goldstone-engine = { path = "../goldstone-engine" }
+
+[build-dependencies]
+napi-build = "2"
