@@ -12,8 +12,63 @@ Sending stays with `@c9up/rover`.
 
 ## Status
 
-Here: parsing a received message. Reading IMAP mailboxes, inbound webhooks
-and the DKIM / SPF / DMARC verdict land in later releases.
+Here: reading IMAP mailboxes and parsing what they hold. Inbound webhooks and
+the DKIM / SPF / DMARC verdict land in later releases.
+
+## Reading a mailbox
+
+```ts
+// config/inbox.ts
+import { defineConfig } from "@c9up/goldstone"
+
+export default defineConfig({
+  mailbox: "support",
+  mailboxes: {
+    support: {
+      host: "imap.example.com",
+      auth: { user: env.get("IMAP_USER"), pass: env.get("IMAP_PASSWORD") },
+    },
+    billing: {
+      host: "outlook.office365.com",
+      // XOAUTH2. Called on every connection, so an expired token is asked
+      // for again when the connection is made anew.
+      auth: { user: "billing@example.com", accessToken: () => tokens.for("billing") },
+    },
+  },
+})
+
+// reamrc.ts
+providers: [() => import("@c9up/goldstone/provider")]
+```
+
+```ts
+import inbox from "@c9up/goldstone/services/main"
+
+const support = inbox.mailbox() // the default; inbox.mailbox("billing")
+
+for (const uid of await support.search({ seen: false })) {
+  const message = await support.fetch(uid)   // parsed, see below
+  await support.markSeen(uid)
+}
+await support.move(uid, "Archive")
+
+const stop = support.watch(async (message, { uid }) => {
+  // every new message, as it arrives
+})
+```
+
+- **TLS is required**: implicit TLS by default (993), or `starttls: true`,
+  which refuses to go on when the server does not offer STARTTLS. Plaintext
+  or an unchecked certificate need `allowInsecure`, for a local test server.
+- A mailbox opens on first use. `watch()` keeps its own connection in IDLE;
+  when it is lost, it reconnects with a growing wait and delivers what
+  arrived meanwhile — messages are followed by UID, so none is skipped and
+  none delivered twice. A handler that throws is reported to `onError` and
+  the watch goes on.
+- A message's size is asked of the server before it is downloaded: one over
+  `limits.maxBytes` is refused without being fetched.
+- The provider logs out of every mailbox on shutdown, so an IDLE connection
+  does not keep the process alive.
 
 ## Parsing a received message
 

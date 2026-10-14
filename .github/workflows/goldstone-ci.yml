@@ -132,9 +132,13 @@ jobs:
         env:
           CARGO_BUILD_TARGET: ${{ matrix.target }}
 
+      # The parsing suite only: it is what proves the binary loads and works on
+      # this platform. The IMAP suites need a test server, and service
+      # containers exist on Linux runners only — they run in ts-tests below,
+      # where "zero skipped" would otherwise flag them here.
       - name: Vitest (JSON reporter)
         if: matrix.test
-        run: pnpm exec vitest run --reporter=default --reporter=json --outputFile=test-results.json
+        run: pnpm exec vitest run tests/parse.test.ts --reporter=default --reporter=json --outputFile=test-results.json
         shell: bash
 
       - name: Smoke gate — tests ran AND zero skipped (Linux/macOS)
@@ -199,6 +203,20 @@ jobs:
   ts-tests:
     name: TypeScript (vitest, linux-x64-gnu)
     runs-on: ubuntu-latest
+    # The IMAP test server: IMAPS on 3993, SMTP on 3025 to drop mail in, one
+    # user per suite. Without it the IMAP suites skip and the coverage floor
+    # fails, which is the point.
+    services:
+      greenmail:
+        image: greenmail/standalone:2.1.14
+        ports: ['3025:3025', '3993:3993']
+        env:
+          GREENMAIL_OPTS: >-
+            -Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0
+            -Dgreenmail.users=alice:secret@example.test,dave:secret@example.test,erin:secret@example.test,frank:secret@example.test
+    env:
+      GOLDSTONE_IMAP_TEST_PORT: 3993
+      GOLDSTONE_SMTP_TEST_PORT: 3025
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6

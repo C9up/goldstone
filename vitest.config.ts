@@ -12,11 +12,13 @@ export default defineConfig({
 			// A floor, not a target: set just under what the suite covers today.
 			// Branches sit lower because the loader's "binary missing" and "binary
 			// failed to load" paths cannot run where the binary loads.
+			// Measured with the IMAP test server up (GOLDSTONE_IMAP_TEST_PORT), as CI
+			// runs it: without one, the IMAP suites skip and this floor fails.
 			thresholds: {
-				lines: 95,
+				lines: 96,
 				statements: 93,
-				branches: 70,
-				functions: 90,
+				branches: 76,
+				functions: 88,
 			},
 		},
 	},
