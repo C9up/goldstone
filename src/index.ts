@@ -22,6 +22,17 @@ export {
 } from "./errors.js";
 export { InboxManager } from "./InboxManager.js";
 export {
+	type InboundHttpContext,
+	type InboundResponse,
+	MemoryReplayGuard,
+	type ReplayGuard,
+} from "./inbound/context.js";
+export {
+	createMailgunInboundHandler,
+	type InboundMeta,
+	type MailgunInboundOptions,
+} from "./inbound/mailgun.js";
+export {
 	Mailbox,
 	type MailboxOptions,
 	reconnectDelay,

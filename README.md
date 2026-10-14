@@ -12,8 +12,8 @@ Sending stays with `@c9up/rover`.
 
 ## Status
 
-Here: reading IMAP mailboxes, parsing what they hold, and checking who sent
-it (DKIM, SPF, DMARC, ARC). Inbound webhooks land in a later release.
+Here: reading IMAP mailboxes, receiving Mailgun's inbound mail, parsing what
+arrives, and checking who sent it (DKIM, SPF, DMARC, ARC).
 
 ## Reading a mailbox
 
@@ -69,6 +69,31 @@ const stop = support.watch(async (message, { uid }) => {
   `limits.maxBytes` is refused without being fetched.
 - The provider logs out of every mailbox on shutdown, so an IDLE connection
   does not keep the process alive.
+
+## Receiving inbound mail (Mailgun)
+
+```ts
+import { createMailgunInboundHandler } from "@c9up/goldstone"
+
+router.post("/inbound/mailgun/mime", createMailgunInboundHandler({
+  signingKey: env.get("MAILGUN_SIGNING_KEY"),
+  async onMessage(message, { recipient, sender }) {
+    // parsed, checked (message.authenticity)
+  },
+}))
+```
+
+Point the Mailgun route's *forward* action at a URL ending in `mime`: that is
+what makes Mailgun send the message as received.
+
+Mailgun signs a timestamp and a token — not the message. So the handler
+refuses a timestamp older than two minutes and handles each token once,
+claimed before handling so two racing requests cannot both get through; a
+delivery whose handler throws gives its token back, and Mailgun's retry is
+handled. Fields are read from the request body only, never the query string.
+The tokens live in this process's memory; with several instances, pass a
+shared `replayGuard`. A message the parser refuses is answered 406, which
+stops Mailgun from retrying it.
 
 ## Parsing a received message
 
