@@ -1,0 +1,61 @@
+{
+  "name": "@c9up/goldstone",
+  "version": "0.1.0",
+  "description": "Goldstone — reading mail for the Ream framework: IMAP mailboxes and inbound mail, received as hostile input",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "lint": "biome check src/ tests/",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.12",
+    "@types/node": "^22.20.1",
+    "@vitest/coverage-v8": "4.1.11",
+    "typescript": "^6.0.3",
+    "vitest": "4.1.11"
+  },
+  "//engines": "Node 24, not 22, because AsyncLocalStorage sits on the request hot path — the container resolves through it, HttpContext is it, and the emitter reads it on every event. Node 24 backs it with AsyncContextFrame by default, and measured on that exact pattern (one context per request, six async boundaries, several reads) it costs 0.61 us per request instead of 1.55 us: 2.5x, on every request, for free. Before 24 the same mechanism existed only behind an experimental flag, and a framework cannot base its performance on a flag the application has to remember to pass. This is NOT 'track the current LTS' — security fixes still land in 22 until 2027, npm 11 is irrelevant under pnpm, and node:sqlite is not what atlas uses.",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "files": [
+    "src",
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    },
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/C9up/goldstone.git"
+  },
+  "pnpm": {
+    "//": "Pin the coverage toolchain to the version used in dev. Without a committed lockfile the standalone CI resolves fresh, and v8 branch-counting differs enough between releases to cross a threshold on its own. Overrides only apply when this package is the install root (CI), so the monorepo workspace is unaffected.",
+    "overrides": {
+      "@vitest/coverage-v8": "4.1.11",
+      "vitest": "4.1.11"
+    }
+  }
+}
