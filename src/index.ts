@@ -1,6 +1,14 @@
 import "./augmentations.js";
 
 export {
+	type AuthenticateOptions,
+	type Authenticity,
+	type AuthResult,
+	authenticate,
+	type DkimVerdict,
+	type DmarcPolicy,
+} from "./authenticity.js";
+export {
 	defineConfig,
 	type InboxConfig,
 	type MailboxConfig,
@@ -15,6 +23,7 @@ export {
 export { InboxManager } from "./InboxManager.js";
 export {
 	Mailbox,
+	type MailboxOptions,
 	reconnectDelay,
 	type SearchCriteria,
 	type WatchOptions,
@@ -26,5 +35,7 @@ export {
 	type Limits,
 	type Mailbox as Address,
 	parseMessage,
+	type ReadOptions,
 	ReceivedMessage,
+	readMessage,
 } from "./ReceivedMessage.js";

@@ -33,7 +33,10 @@ export class InboxManager<
 				`[inbox] no mailbox "${name}" — got ${Object.keys(this.#config.mailboxes).join(", ")}`,
 			);
 		}
-		const mailbox = new Mailbox(name, config, this.#config.limits);
+		const mailbox = new Mailbox(name, config, {
+			limits: this.#config.limits,
+			authenticate: this.#config.authenticate,
+		});
 		this.#open.set(name, mailbox);
 		return mailbox;
 	}

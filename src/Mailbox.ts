@@ -8,9 +8,10 @@
  *   }
  *   const stop = support.watch(async (message, { uid }) => { … })
  *
- * Every message read goes through {@link parseMessage}: its size is asked of
+ * Every message read goes through {@link readMessage}: its size is asked of
  * the server first, so one over the limit is refused without being
- * downloaded.
+ * downloaded; it is then parsed, and its sender checked (DKIM, SPF, DMARC)
+ * unless `authenticate: false`.
  */
 
 import { ImapFlow, type SearchObject } from "imapflow";
@@ -18,8 +19,8 @@ import { assertSecure, type MailboxConfig } from "./config.js";
 import { GoldstoneError } from "./errors.js";
 import {
 	type Limits,
-	parseMessage,
 	type ReceivedMessage,
+	readMessage,
 } from "./ReceivedMessage.js";
 
 export type SearchCriteria = SearchObject;
@@ -47,18 +48,35 @@ export function reconnectDelay(attempt: number): number {
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
 
+export interface MailboxOptions {
+	/** Bounds on every message read. */
+	limits?: Limits;
+	/**
+	 * Check DKIM, SPF and DMARC on every message read — the verdict lands on
+	 * `message.authenticity`. Default `true`: it costs DNS lookups (cached),
+	 * and a From nobody checked is the From a phisher wrote.
+	 */
+	authenticate?: boolean;
+}
+
 export class Mailbox {
 	readonly name: string;
 	readonly #config: MailboxConfig;
 	readonly #limits: Limits | undefined;
+	readonly #authenticate: boolean;
 	#client: Promise<ImapFlow> | undefined;
 	readonly #watches = new Set<() => Promise<void>>();
 
-	constructor(name: string, config: MailboxConfig, limits?: Limits) {
+	constructor(
+		name: string,
+		config: MailboxConfig,
+		options: MailboxOptions = {},
+	) {
 		assertSecure(name, config);
 		this.name = name;
 		this.#config = config;
-		this.#limits = limits;
+		this.#limits = options.limits;
+		this.#authenticate = options.authenticate ?? true;
 	}
 
 	/** Every folder's path, as the server names it. */
@@ -259,7 +277,10 @@ export class Mailbox {
 		if (full === false || full === undefined || full.source === undefined) {
 			return undefined;
 		}
-		return parseMessage(full.source, this.#limits);
+		return readMessage(full.source, {
+			limits: this.#limits,
+			authenticate: this.#authenticate,
+		});
 	}
 
 	async #in<T>(

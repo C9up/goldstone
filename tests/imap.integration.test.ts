@@ -40,11 +40,9 @@ function mailbox(
 	overrides: Partial<MailboxConfig> = {},
 	maxBytes?: number,
 ): Mailbox {
-	const box = new Mailbox(
-		user,
-		config(user, overrides),
-		maxBytes ? { maxBytes } : undefined,
-	);
+	const box = new Mailbox(user, config(user, overrides), {
+		limits: maxBytes ? { maxBytes } : undefined,
+	});
 	opened.push(box);
 	return box;
 }

@@ -69,6 +69,11 @@ export interface InboxConfig<Mailboxes extends Record<string, MailboxConfig>> {
 	mailboxes: Mailboxes;
 	/** Bounds applied to every message read; see {@link Limits}. */
 	limits?: Limits;
+	/**
+	 * Check DKIM, SPF and DMARC on every message read. Default `true`; see
+	 * `message.authenticity`.
+	 */
+	authenticate?: boolean;
 }
 
 /**

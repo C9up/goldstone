@@ -12,8 +12,8 @@ Sending stays with `@c9up/rover`.
 
 ## Status
 
-Here: reading IMAP mailboxes and parsing what they hold. Inbound webhooks and
-the DKIM / SPF / DMARC verdict land in later releases.
+Here: reading IMAP mailboxes, parsing what they hold, and checking who sent
+it (DKIM, SPF, DMARC, ARC). Inbound webhooks land in a later release.
 
 ## Reading a mailbox
 
@@ -105,6 +105,35 @@ from whoever sent it, so:
 
 The engine is a native binary, prebuilt for Linux, macOS and Windows; there is
 no JavaScript fallback.
+
+## Who sent it
+
+The From header is whatever the sender typed. A message read from a mailbox
+carries the verdict on `message.authenticity`; for raw bytes, `readMessage()`
+parses and checks, `authenticate()` only checks:
+
+```ts
+import { authenticate, readMessage } from "@c9up/goldstone"
+
+const message = await readMessage(raw)
+message.authenticity.summary   // "pass" | "fail" | "none" | "temperror"
+message.authenticity.dkim      // [{ result, domain, selector, reason }]
+message.authenticity.dmarc     // and dmarcPolicy, dmarcDomain, spf, arc
+
+// SPF needs to know who delivered the message — a webhook usually says:
+await authenticate(raw, { ip: "203.0.113.7", helo: "mx.sender.test", mailFrom: "bounces@sender.test" })
+```
+
+- `summary` is `pass` only when the From domain's DMARC passes, through a
+  DKIM signature or an SPF result aligned with that domain. A message signed
+  by another domain than its From does not pass.
+- A check that cannot complete — DNS down, too slow — is `temperror`,
+  never a pass. The whole check has a deadline (10 s by default), at most 5
+  DKIM signatures are verified (each is a lookup), and DNS answers are cached.
+- Read over IMAP, a message usually does not carry who delivered it
+  reliably, so SPF is `none` there and DMARC rests on DKIM.
+- Turn it off with `authenticate: false` in `config/inbox.ts`, or
+  `readMessage(raw, { authenticate: false })`; `parseMessage()` never checks.
 
 ## License
 

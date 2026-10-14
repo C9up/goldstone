@@ -12,6 +12,11 @@
  * made safe before it reaches the application.
  */
 
+import {
+	type AuthenticateOptions,
+	type Authenticity,
+	authenticate,
+} from "./authenticity.js";
 import { fromEngine, GoldstoneError } from "./errors.js";
 import type { JsLimits, JsMessage } from "./native/generated.js";
 import { engine } from "./native.js";
@@ -72,9 +77,16 @@ export class ReceivedMessage {
 	/** Sanitized for display: no script, no event handler, no `javascript:` URL. */
 	readonly html?: string;
 	readonly attachments: readonly Attachment[];
+	/**
+	 * Who really sent it — present when the message was read with
+	 * {@link readMessage} (as a mailbox reads it), absent from
+	 * {@link parseMessage}, which does no DNS.
+	 */
+	readonly authenticity?: Authenticity;
 	readonly #unsanitizedHtml?: string;
 
-	constructor(parsed: JsMessage) {
+	constructor(parsed: JsMessage, authenticity?: Authenticity) {
+		this.authenticity = authenticity;
 		this.messageId = parsed.messageId;
 		this.subject = parsed.subject;
 		this.date = parsed.date === undefined ? undefined : new Date(parsed.date);
@@ -154,14 +166,42 @@ export function parseMessage(
 	raw: Uint8Array,
 	limits?: Limits,
 ): ReceivedMessage {
+	return new ReceivedMessage(parseNative(raw, limits));
+}
+
+function parseNative(raw: Uint8Array, limits: Limits | undefined): JsMessage {
 	const bounds = nativeLimits(limits);
 	const bytes = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
-	let parsed: JsMessage;
 	try {
-		parsed = engine().parseMessage(bytes, bounds);
+		return engine().parseMessage(bytes, bounds);
 	} catch (error) {
 		if (error instanceof GoldstoneError) throw error;
 		throw fromEngine(error);
 	}
-	return new ReceivedMessage(parsed);
+}
+
+export interface ReadOptions {
+	limits?: Limits;
+	/**
+	 * Check DKIM, SPF and DMARC — `true` (the default), `false`, or the
+	 * envelope and bounds {@link authenticate} takes.
+	 */
+	authenticate?: boolean | AuthenticateOptions;
+}
+
+/**
+ * Parse a received message AND check who sent it: {@link parseMessage},
+ * then {@link authenticate}, the verdict on `message.authenticity`.
+ */
+export async function readMessage(
+	raw: Uint8Array,
+	options: ReadOptions = {},
+): Promise<ReceivedMessage> {
+	const parsed = parseNative(raw, options.limits);
+	if (options.authenticate === false) return new ReceivedMessage(parsed);
+	const authOptions =
+		options.authenticate === true || options.authenticate === undefined
+			? { maxBytes: options.limits?.maxBytes }
+			: { maxBytes: options.limits?.maxBytes, ...options.authenticate };
+	return new ReceivedMessage(parsed, await authenticate(raw, authOptions));
 }

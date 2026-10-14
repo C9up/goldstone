@@ -11,6 +11,8 @@
 //! happily walk 5 000 nested multiparts or 100 000 parts. Every bound lives
 //! here.
 
+pub mod auth;
+
 use mail_parser::{Address, HeaderValue, MessageParser, MimeHeaders, PartType};
 use std::fmt;
 

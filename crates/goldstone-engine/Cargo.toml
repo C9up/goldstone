@@ -11,3 +11,13 @@ description = "Parses received mail as hostile input, for Goldstone"
 mail-parser = "0.11"
 # HTML sanitizing for display — the library blackhole-engine already uses.
 ammonia = "4"
+# DKIM, SPF, DMARC and ARC. On ring rather than the default aws-lc-rs, a C
+# library that is heavy to cross-compile for five platforms.
+mail-auth = { version = "0.13", default-features = false, features = ["ring", "arc"] }
+# The deadline on the DNS checks.
+tokio = { version = "1", features = ["time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# Signing test messages with a key the test publishes in the cache.
+mail-auth = { version = "0.13", default-features = false, features = ["ring", "arc", "generate"] }

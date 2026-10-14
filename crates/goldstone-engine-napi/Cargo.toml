@@ -9,9 +9,11 @@ description = "NAPI bindings for goldstone-engine"
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = { version = "3", features = ["napi4"] }
+napi = { version = "3", features = ["napi4", "tokio_rt"] }
 napi-derive = { version = "3", features = ["type-def"] }
 goldstone-engine = { path = "../goldstone-engine" }
+# The resolver the authenticity checks run on.
+mail-auth = { version = "0.13", default-features = false, features = ["ring", "arc"] }
 
 [build-dependencies]
 napi-build = "2"
