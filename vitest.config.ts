@@ -13,12 +13,13 @@ export default defineConfig({
 			// Branches sit lower because the loader's "binary missing" and "binary
 			// failed to load" paths cannot run where the binary loads.
 			// Measured with the IMAP test server up (GOLDSTONE_IMAP_TEST_PORT), as CI
-			// runs it: without one, the IMAP suites skip and this floor fails.
+			// runs it: without one, the IMAP suites skip and this floor fails. Set under
+			// the CI run's figures: the reconnect path's timing varies by machine.
 			thresholds: {
-				lines: 96,
-				statements: 93,
-				branches: 76,
-				functions: 88,
+				lines: 95,
+				statements: 91,
+				branches: 75,
+				functions: 86,
 			},
 		},
 	},

@@ -256,7 +256,9 @@ export class Mailbox {
 			{ uid: true, source: true },
 			{ uid: true },
 		);
-		if (!full?.source) return undefined;
+		if (full === false || full === undefined || full.source === undefined) {
+			return undefined;
+		}
 		return parseMessage(full.source, this.#limits);
 	}
 
