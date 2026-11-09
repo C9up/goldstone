@@ -27,10 +27,17 @@ import { engine } from "./native.js";
 export interface Limits {
 	/** Size of the raw message, checked before parsing. Default 25 MiB. */
 	maxBytes?: number;
-	/** MIME parts, the message itself included. Default 1 000. */
+	/**
+	 * MIME parts, the message itself included, and the parts of the
+	 * messages it carries (message/rfc822). Default 1 000.
+	 */
 	maxParts?: number;
-	/** Nesting depth of multiparts. Default 32. */
+	/** Nesting depth of multiparts and carried messages. Default 32. */
 	maxDepth?: number;
+	/** Header fields in one header block, the message's or a part's. Default 1 000. */
+	maxHeaders?: number;
+	/** Size of one header block. Default 1 MiB. */
+	maxHeaderBytes?: number;
 	/** Number of attachments. Default 100. */
 	maxAttachments?: number;
 	/** Size of one decoded attachment. Default 25 MiB. */
@@ -152,6 +159,8 @@ const LIMIT_KEYS = [
 	"maxBytes",
 	"maxParts",
 	"maxDepth",
+	"maxHeaders",
+	"maxHeaderBytes",
 	"maxAttachments",
 	"maxAttachmentBytes",
 	"maxHtmlBytes",
@@ -180,6 +189,7 @@ function nativeLimits(limits: Limits | undefined): JsLimits | undefined {
  *
  * Rejects with a `GoldstoneError` on a message over a limit
  * (`E_GOLDSTONE_MESSAGE_TOO_LARGE`, `…_TOO_MANY_PARTS`, `…_TOO_DEEP`,
+ * `…_TOO_MANY_HEADERS`, `…_HEADERS_TOO_LARGE`,
  * `…_TOO_MANY_ATTACHMENTS`, `…_ATTACHMENT_TOO_LARGE`) or not a message at
  * all (`E_GOLDSTONE_NOT_A_MESSAGE`).
  */

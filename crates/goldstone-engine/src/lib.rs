@@ -13,6 +13,7 @@
 
 pub mod auth;
 pub mod html;
+mod structure;
 
 use mail_parser::{Address, HeaderName, HeaderValue, MessageParser, MimeHeaders, PartType};
 use std::fmt;
@@ -22,10 +23,15 @@ use std::fmt;
 pub struct Limits {
     /// Size of the raw message. Checked before parsing.
     pub max_bytes: usize,
-    /// Number of MIME parts, the message itself included.
+    /// Number of MIME parts, the message itself included, and the parts of
+    /// the messages it carries (message/rfc822).
     pub max_parts: usize,
-    /// Nesting depth of multiparts.
+    /// Nesting depth of multiparts and carried messages.
     pub max_depth: usize,
+    /// Header fields in one header block: the message's or a part's.
+    pub max_headers: usize,
+    /// Size of one header block.
+    pub max_header_bytes: usize,
     /// Number of attachments.
     pub max_attachments: usize,
     /// Size of one decoded attachment.
@@ -41,6 +47,8 @@ impl Default for Limits {
             max_bytes: 25 * 1024 * 1024,
             max_parts: 1_000,
             max_depth: 32,
+            max_headers: 1_000,
+            max_header_bytes: 1024 * 1024,
             max_attachments: 100,
             max_attachment_bytes: 25 * 1024 * 1024,
             max_html_bytes: 512 * 1024,
@@ -50,15 +58,58 @@ impl Default for Limits {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ParseError {
-    TooLarge { size: usize, max: usize },
+    TooLarge {
+        size: usize,
+        max: usize,
+    },
     NotAMessage,
-    TooManyParts { count: usize, max: usize },
-    TooDeep { depth: usize, max: usize },
-    TooManyAttachments { count: usize, max: usize },
-    AttachmentTooLarge { size: usize, max: usize },
-    HtmlTooLarge { size: usize, max: usize },
-    HtmlTooDeep { max: usize },
-    HtmlTooComplex { max: usize },
+    TooManyParts {
+        count: usize,
+        max: usize,
+    },
+    TooDeep {
+        depth: usize,
+        max: usize,
+    },
+    /// Before parsing: more places a part could start than the parts
+    /// allowed leave room for.
+    TooManyBoundaries {
+        count: usize,
+        max: usize,
+    },
+    TooManyEncodedMessages {
+        max: usize,
+    },
+    TooManyHeaders {
+        count: usize,
+        max: usize,
+    },
+    TooManyHeaderFields {
+        count: usize,
+        max: usize,
+    },
+    HeadersTooLarge {
+        size: usize,
+        max: usize,
+    },
+    TooManyAttachments {
+        count: usize,
+        max: usize,
+    },
+    AttachmentTooLarge {
+        size: usize,
+        max: usize,
+    },
+    HtmlTooLarge {
+        size: usize,
+        max: usize,
+    },
+    HtmlTooDeep {
+        max: usize,
+    },
+    HtmlTooComplex {
+        max: usize,
+    },
 }
 
 impl ParseError {
@@ -69,6 +120,13 @@ impl ParseError {
             Self::NotAMessage => "E_GOLDSTONE_NOT_A_MESSAGE",
             Self::TooManyParts { .. } => "E_GOLDSTONE_TOO_MANY_PARTS",
             Self::TooDeep { .. } => "E_GOLDSTONE_TOO_DEEP",
+            Self::TooManyBoundaries { .. } | Self::TooManyEncodedMessages { .. } => {
+                "E_GOLDSTONE_TOO_MANY_PARTS"
+            }
+            Self::TooManyHeaders { .. } | Self::TooManyHeaderFields { .. } => {
+                "E_GOLDSTONE_TOO_MANY_HEADERS"
+            }
+            Self::HeadersTooLarge { .. } => "E_GOLDSTONE_HEADERS_TOO_LARGE",
             Self::TooManyAttachments { .. } => "E_GOLDSTONE_TOO_MANY_ATTACHMENTS",
             Self::AttachmentTooLarge { .. } => "E_GOLDSTONE_ATTACHMENT_TOO_LARGE",
             Self::HtmlTooLarge { .. } => "E_GOLDSTONE_HTML_TOO_LARGE",
@@ -92,6 +150,26 @@ impl fmt::Display for ParseError {
             Self::TooDeep { depth, max } => write!(
                 f,
                 "the message nests {depth} levels deep, over the {max} allowed"
+            ),
+            Self::TooManyBoundaries { count, max } => write!(
+                f,
+                "the message has {count} places a part can start, over the {max} its parts limit leaves room for"
+            ),
+            Self::TooManyEncodedMessages { max } => write!(
+                f,
+                "the message carries more than {max} encoded messages"
+            ),
+            Self::TooManyHeaders { count, max } => write!(
+                f,
+                "a header block holds {count} fields, over the {max} allowed"
+            ),
+            Self::TooManyHeaderFields { count, max } => write!(
+                f,
+                "the message holds {count} header fields in all, over the {max} its limits leave room for"
+            ),
+            Self::HeadersTooLarge { size, max } => write!(
+                f,
+                "a header block is {size} bytes, over the {max} allowed"
             ),
             Self::TooManyAttachments { count, max } => write!(
                 f,
@@ -179,22 +257,11 @@ pub fn parse_mail<'x>(
             max: limits.max_bytes,
         });
     }
+    structure::prescan(raw, limits)?;
     let message = MessageParser::default()
         .parse(raw)
         .ok_or(ParseError::NotAMessage)?;
-    if message.parts.len() > limits.max_parts {
-        return Err(ParseError::TooManyParts {
-            count: message.parts.len(),
-            max: limits.max_parts,
-        });
-    }
-    let depth = nesting_depth(&message);
-    if depth > limits.max_depth {
-        return Err(ParseError::TooDeep {
-            depth,
-            max: limits.max_depth,
-        });
-    }
+    check_structure(&message, limits)?;
     if message.attachments.len() > limits.max_attachments {
         return Err(ParseError::TooManyAttachments {
             count: message.attachments.len(),
@@ -305,17 +372,57 @@ pub fn message_of(
     })
 }
 
-/// Deepest multipart nesting, walked iteratively.
-fn nesting_depth(message: &mail_parser::Message<'_>) -> usize {
-    let mut deepest = 0;
-    let mut stack = vec![(0usize, 0usize)];
-    while let Some((id, depth)) = stack.pop() {
-        deepest = deepest.max(depth);
-        if let Some(PartType::Multipart(children)) = message.parts.get(id).map(|p| &p.body) {
-            stack.extend(children.iter().map(|child| (*child as usize, depth + 1)));
+/// The exact counts, through the parts of every carried message too:
+/// parts, nesting (a carried message is one level), headers per part.
+/// Walked iteratively, so depth costs no stack.
+fn check_structure(message: &mail_parser::Message<'_>, limits: &Limits) -> Result<(), ParseError> {
+    let mut parts = 0usize;
+    let mut messages = vec![(message, 0usize)];
+    while let Some((message, base)) = messages.pop() {
+        parts += message.parts.len();
+        if parts > limits.max_parts {
+            return Err(ParseError::TooManyParts {
+                count: parts,
+                max: limits.max_parts,
+            });
+        }
+        if let Some(part) = message
+            .parts
+            .iter()
+            .find(|p| p.headers.len() > limits.max_headers)
+        {
+            return Err(ParseError::TooManyHeaders {
+                count: part.headers.len(),
+                max: limits.max_headers,
+            });
+        }
+        let mut depth_of = vec![base; message.parts.len()];
+        let mut walk = vec![0usize];
+        while let Some(id) = walk.pop() {
+            let depth = depth_of[id];
+            if depth > limits.max_depth {
+                return Err(ParseError::TooDeep {
+                    depth,
+                    max: limits.max_depth,
+                });
+            }
+            if let Some(PartType::Multipart(children)) = message.parts.get(id).map(|p| &p.body) {
+                // A child always comes after its parent: no cycle to follow.
+                for child in children.iter().map(|c| *c as usize) {
+                    if child > id && child < depth_of.len() {
+                        depth_of[child] = depth + 1;
+                        walk.push(child);
+                    }
+                }
+            }
+        }
+        for (id, part) in message.parts.iter().enumerate() {
+            if let PartType::Message(carried) = &part.body {
+                messages.push((carried, depth_of[id] + 1));
+            }
         }
     }
-    deepest
+    Ok(())
 }
 
 fn mailboxes(address: Option<&Address<'_>>) -> Vec<Mailbox> {

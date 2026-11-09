@@ -252,3 +252,43 @@ describe("parseMessage — hostile HTML", () => {
 		expect(m.text).toContain("hello");
 	});
 });
+
+describe("parseMessage — structure bounded before parsing", () => {
+	const manyParts = (n: number) =>
+		`From: x@y.test\r\nContent-Type: multipart/mixed; boundary=I\r\n\r\n${"--I\r\n\r\nx\r\n".repeat(n)}--I--\r\n`;
+	const carried = (inner: string) =>
+		`${HEAD}Content-Type: multipart/mixed; boundary=O\r\n\r\n--O\r\nContent-Type: message/rfc822\r\n\r\n${inner}\r\n--O--\r\n`;
+
+	it("refuses millions of headers without building them", async () => {
+		const raw = bytes(
+			`From: x@y.test\r\n${"a:b\r\n".repeat(4_800_000)}\r\nbody\r\n`,
+		);
+		const started = performance.now();
+		expect(await codeOf(() => parseMessage(raw))).toBe(
+			"E_GOLDSTONE_TOO_MANY_HEADERS",
+		);
+		expect(performance.now() - started).toBeLessThan(1_000);
+	});
+
+	it("bounds headers with maxHeaders and maxHeaderBytes", async () => {
+		expect(
+			await codeOf(() => parseMessage(bytes(HEAD), { maxHeaders: 3 })),
+		).toBe("E_GOLDSTONE_TOO_MANY_HEADERS");
+		expect(
+			await codeOf(() => parseMessage(bytes(HEAD), { maxHeaderBytes: 64 })),
+		).toBe("E_GOLDSTONE_HEADERS_TOO_LARGE");
+	});
+
+	it("counts the parts and the nesting of a carried message", async () => {
+		expect(
+			await codeOf(() => parseMessage(bytes(carried(manyParts(20_000))))),
+		).toBe("E_GOLDSTONE_TOO_MANY_PARTS");
+		let inner = "Subject: leaf\r\n\r\nleaf\r\n";
+		for (let i = 0; i < 2_000; i++) {
+			inner = `From: x@y.test\r\nContent-Type: message/rfc822\r\n\r\n${inner}`;
+		}
+		expect(await codeOf(() => parseMessage(bytes(HEAD + inner)))).toBe(
+			"E_GOLDSTONE_TOO_DEEP",
+		);
+	});
+});

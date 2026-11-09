@@ -117,11 +117,18 @@ out, and the event loop keeps serving requests meanwhile. A received mail is
 input from whoever sent it, so:
 
 - **the size is checked before a byte is parsed**, then the structure is
-  bounded — parts, nesting depth, number and size of attachments. Each limit
-  has a default and can be set per call (`parseMessage(raw, { maxBytes })`);
-  over one, a `GoldstoneError` names it (`E_GOLDSTONE_MESSAGE_TOO_LARGE`,
-  `…_TOO_MANY_PARTS`, `…_TOO_DEEP`, `…_TOO_MANY_ATTACHMENTS`,
-  `…_ATTACHMENT_TOO_LARGE`);
+  bounded — parts, nesting depth, header fields and header size, number and
+  size of attachments. Parts and nesting count through the messages a message
+  carries (message/rfc822), encoded or not. Parts and headers are bounded
+  before the parse too, by one pass over the bytes, so a message made of
+  millions of tiny parts or headers is refused before it costs any memory.
+  Each limit has a default and can be set per call
+  (`parseMessage(raw, { maxBytes })`); over one, a `GoldstoneError` names it
+  (`E_GOLDSTONE_MESSAGE_TOO_LARGE`, `…_TOO_MANY_PARTS`, `…_TOO_DEEP`,
+  `…_TOO_MANY_HEADERS`, `…_HEADERS_TOO_LARGE`, `…_TOO_MANY_ATTACHMENTS`,
+  `…_ATTACHMENT_TOO_LARGE`). The pass before the parse counts generously: a
+  body line holding `--` counts as a place a part may start, so a text body
+  with thousands of such lines can need a higher `maxParts`;
 - **`html` is sanitized** — no script, no event handler, no `javascript:` URL.
   The HTML as received is only reachable through `unsanitizedHtml()`, for what
   has to see the original; never render it;

@@ -98,10 +98,10 @@ fn nested(levels: usize) -> String {
 #[test]
 fn deep_nesting_is_refused() {
     // 40 levels: few parts, so it is the depth that refuses.
-    assert_eq!(
+    assert!(matches!(
         parse(nested(40).as_bytes(), &Limits::default()).unwrap_err(),
-        ParseError::TooDeep { depth: 40, max: 32 }
-    );
+        ParseError::TooDeep { max: 32, .. }
+    ));
     // 5 000 levels: refused (the part count trips first), and quickly.
     assert!(parse(nested(5_000).as_bytes(), &Limits::default()).is_err());
 }
@@ -112,10 +112,12 @@ fn too_many_parts_are_refused() {
         .map(|_| "Content-Type: text/plain\r\n\r\nx".into())
         .collect();
     let raw = format!("{HEAD}{}", multipart("P", &parts));
-    assert!(matches!(
-        parse(raw.as_bytes(), &Limits::default()),
-        Err(ParseError::TooManyParts { max: 1_000, .. })
-    ));
+    assert_eq!(
+        parse(raw.as_bytes(), &Limits::default())
+            .map_err(|e| e.code())
+            .err(),
+        Some("E_GOLDSTONE_TOO_MANY_PARTS")
+    );
 }
 
 #[test]
@@ -345,4 +347,165 @@ fn ordinary_sloppy_html_is_still_sanitized() {
     let m = parse_within(&html_message(&html), &Limits::default(), BUDGET);
     assert_eq!(m.html_error, None);
     assert!(m.html.is_some_and(|h| h.contains("para 499")));
+}
+
+fn code_of(raw: &[u8]) -> Option<&'static str> {
+    parse(raw, &Limits::default()).err().map(|e| e.code())
+}
+
+/// Refused within `budget`: the bound must stop the work, not follow it.
+fn refused_quickly(raw: &[u8]) -> &'static str {
+    let started = std::time::Instant::now();
+    let code = code_of(raw).expect("refused");
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(1500),
+        "{code} after {:?}",
+        started.elapsed()
+    );
+    code
+}
+
+fn base64_lines(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for (i, chunk) in bytes.chunks(3).enumerate() {
+        if i > 0 && i % 19 == 0 {
+            out.push_str("\r\n");
+        }
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for k in 0..4 {
+            if k <= chunk.len() {
+                out.push(char::from(ALPHABET[((n >> (18 - 6 * k)) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+fn carried(inner: &str, encoding: Option<&str>) -> String {
+    let cte = encoding.map_or(String::new(), |e| {
+        format!("Content-Transfer-Encoding: {e}\r\n")
+    });
+    format!(
+        "{HEAD}Content-Type: multipart/mixed; boundary=O\r\n\r\n--O\r\nContent-Type: message/rfc822\r\n{cte}\r\n{inner}\r\n--O--\r\n"
+    )
+}
+
+fn many_parts(n: usize) -> String {
+    format!(
+        "From: x@y.test\r\nContent-Type: multipart/mixed; boundary=I\r\n\r\n{}--I--\r\n",
+        "--I\r\n\r\nx\r\n".repeat(n)
+    )
+}
+
+#[test]
+fn millions_of_headers_are_refused_before_they_are_parsed() {
+    // 23 MB of `a:b`: 4.8 M JavaScript objects and 1.2 GB once parsed.
+    let raw = format!(
+        "From: x@y.test\r\n{}\r\nbody\r\n",
+        "a:b\r\n".repeat(4_800_000)
+    );
+    assert_eq!(
+        refused_quickly(raw.as_bytes()),
+        "E_GOLDSTONE_TOO_MANY_HEADERS"
+    );
+}
+
+#[test]
+fn headers_of_a_part_are_bounded_too() {
+    let raw = format!(
+        "{HEAD}Content-Type: multipart/mixed; boundary=P\r\n\r\n--P\r\n{}\r\nx\r\n--P--\r\n",
+        "a:b\r\n".repeat(1_000_000)
+    );
+    assert_eq!(
+        refused_quickly(raw.as_bytes()),
+        "E_GOLDSTONE_TOO_MANY_HEADERS"
+    );
+}
+
+#[test]
+fn a_header_block_is_bounded_in_bytes() {
+    let raw = format!(
+        "{HEAD}X-Big: {}\r\n\r\nbody\r\n",
+        "A".repeat(2 * 1024 * 1024)
+    );
+    assert_eq!(
+        refused_quickly(raw.as_bytes()),
+        "E_GOLDSTONE_HEADERS_TOO_LARGE"
+    );
+}
+
+#[test]
+fn millions_of_parts_are_refused_before_they_are_parsed() {
+    // 20 MB of empty parts: 600 MB built before the count refused them.
+    let raw = format!("{HEAD}{}", many_parts(2_200_000));
+    assert_eq!(
+        refused_quickly(raw.as_bytes()),
+        "E_GOLDSTONE_TOO_MANY_PARTS"
+    );
+}
+
+#[test]
+fn the_parts_of_a_carried_message_count() {
+    let raw = carried(&many_parts(20_000), None);
+    assert_eq!(code_of(raw.as_bytes()), Some("E_GOLDSTONE_TOO_MANY_PARTS"));
+    // Under the boundary bound, the exact count still sees them.
+    let raw = carried(&many_parts(1_500), None);
+    assert_eq!(code_of(raw.as_bytes()), Some("E_GOLDSTONE_TOO_MANY_PARTS"));
+}
+
+#[test]
+fn carried_messages_count_as_nesting() {
+    let mut inner = String::from("Subject: leaf\r\n\r\nleaf\r\n");
+    for _ in 0..2_000 {
+        inner = format!("From: x@y.test\r\nContent-Type: message/rfc822\r\n\r\n{inner}");
+    }
+    assert_eq!(
+        code_of(format!("{HEAD}{inner}").as_bytes()),
+        Some("E_GOLDSTONE_TOO_DEEP")
+    );
+}
+
+#[test]
+fn an_encoded_carried_message_is_bounded_like_one_in_the_clear() {
+    // mail-parser decodes it and parses what comes out: its parts and
+    // headers are invisible in the encoded bytes.
+    let parts = carried(
+        &base64_lines(many_parts(200_000).as_bytes()),
+        Some("base64"),
+    );
+    assert_eq!(
+        refused_quickly(parts.as_bytes()),
+        "E_GOLDSTONE_TOO_MANY_PARTS"
+    );
+
+    let headers = format!(
+        "From: x@y.test\r\n{}\r\nbody",
+        "a=3Ab\r\n".repeat(1_000_000)
+    );
+    let raw = carried(&headers, Some("quoted-printable"));
+    assert_eq!(
+        refused_quickly(raw.as_bytes()),
+        "E_GOLDSTONE_TOO_MANY_HEADERS"
+    );
+}
+
+#[test]
+fn carried_messages_within_bounds_are_read() {
+    let inner = "From: a@x.test\r\nSubject: inner\r\n\r\nhello\r\n";
+    for raw in [
+        carried(inner, None),
+        carried(&base64_lines(inner.as_bytes()), Some("base64")),
+        carried(inner, Some("quoted-printable")),
+    ] {
+        let m = parse(raw.as_bytes(), &Limits::default()).unwrap();
+        assert_eq!(m.attachments.len(), 1, "{raw}");
+    }
 }
