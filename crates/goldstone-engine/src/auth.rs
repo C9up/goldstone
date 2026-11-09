@@ -10,6 +10,7 @@
 //! cap on the DKIM signatures verified (each is a lookup), SPF's own lookup
 //! limit, and a cache so the same key is not fetched for every message.
 
+use mail_auth::common::crypto::Algorithm;
 use mail_auth::common::parse::TxtRecordParser;
 use mail_auth::common::to_a_label;
 use mail_auth::dmarc::verify::DmarcParameters;
@@ -248,11 +249,42 @@ pub async fn authenticate_parsed(
 ) -> Verdict {
     let mut message = AuthenticatedMessage::from_parsed(parsed, parsed.raw_message.as_ref(), true);
     message.dkim_headers.truncate(options.max_dkim_signatures);
-    let checks = run(&message, options, authenticator, cache);
+    let refused = refuse_unsafe_signatures(&mut message);
+    let checks = run(&message, refused, options, authenticator, cache);
     let verdict = tokio::time::timeout(options.timeout, checks)
         .await
         .unwrap_or_else(|_| Verdict::temperror());
     bind(verdict, from_domain(parsed))
+}
+
+/// Signatures a verifier must not accept, whatever their cryptography says,
+/// taken out before DKIM runs so DMARC cannot align on them either.
+/// mail-auth verifies both kinds; RFC 8301 3.1 forbids the first, RFC 6376
+/// 6.1.1 the second (a From left out of `h=` can be rewritten freely).
+fn refuse_unsafe_signatures(message: &mut AuthenticatedMessage<'_>) -> Vec<DkimVerdict> {
+    let mut refused = Vec::new();
+    message.dkim_headers.retain(|header| {
+        let signature = &header.header;
+        let reason = if signature.a == Algorithm::RsaSha1 {
+            "rsa-sha1 is not accepted (RFC 8301)"
+        } else if !signature
+            .h
+            .iter()
+            .any(|h| h.trim().eq_ignore_ascii_case("from"))
+        {
+            "the signature does not cover From (RFC 6376 6.1.1)"
+        } else {
+            return true;
+        };
+        refused.push(DkimVerdict {
+            result: Outcome::PermError,
+            domain: Some(signature.d.clone()),
+            selector: Some(signature.s.clone()),
+            reason: Some(reason.into()),
+        });
+        false
+    });
+    refused
 }
 
 /// Headers RFC 5322 3.6 (and MIME) allow once. A second copy is how an
@@ -336,6 +368,7 @@ fn bind(mut verdict: Verdict, from: FromDomain) -> Verdict {
 
 async fn run(
     message: &AuthenticatedMessage<'_>,
+    refused: Vec<DkimVerdict>,
     options: &AuthOptions,
     authenticator: &MessageAuthenticator,
     cache: &TxtCache,
@@ -378,14 +411,14 @@ async fn run(
         )
         .await;
 
-    let dkim: Vec<DkimVerdict> = dkim_output
-        .iter()
-        .map(|output| DkimVerdict {
+    let dkim: Vec<DkimVerdict> = refused
+        .into_iter()
+        .chain(dkim_output.iter().map(|output| DkimVerdict {
             result: dkim_outcome(output.result()),
             domain: output.signature().map(|s| s.d.clone()),
             selector: output.signature().map(|s| s.s.clone()),
             reason: dkim_reason(output.result()),
-        })
+        }))
         .collect();
     let dmarc = dmarc_outcome(&dmarc_output.result());
     let summary = match dmarc {

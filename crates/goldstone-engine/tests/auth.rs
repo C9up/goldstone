@@ -400,3 +400,69 @@ async fn the_from_domain_a_pass_covers_is_reported() {
     assert_eq!(verdict.summary, Outcome::Pass);
     assert_eq!(verdict.from_domain.as_deref(), Some("bank.test"));
 }
+
+/// Signed with rsa-sha1 by bank.test (openssl, which still signs SHA-1;
+/// the key below is the one it signed with).
+const RSA_SHA1_SIGNED: &str = "DKIM-Signature: v=1; a=rsa-sha1; s=s1; d=bank.test; c=relaxed/relaxed;\r\n\th=Subject:To:From; t=1794258467; bh=7HMbuhnXn9NaJou/ifx09cPS/D8=; b=I5+TlFu\r\n\tP+Tc8YCnvv6M0SWCB3jFTPkzkswyQqPlbHEuqxnAd6skHRrcLogZGQ5ZTetW44Pg3G88zMkrYZK\r\n\tc9Rer4D5LttCxzQZ4dPKMQfzJ267UiwO/GUhmb6GG/gSrMp0/q9RNys4a9wEBVuOfwSMLaueyWv\r\n\t2Cp7nyBht61rT7BcxzluI/X5+uRST42oi5+GZUDkxvIuwVpVfU45mQIkomSnqjbtuaOh424+MFG\r\n\thha7dFuOEmnH8+MREFOtVpVK3NGF6QQDUHXVr+0yO78kbpmiSxaox2qLuGNaypgK2APRhiVnVvw\r\n\tquCWjngXXldHEaahm+NfKn3WLSaxQonURyw==;\r\nFrom: ceo@bank.test\r\nTo: v@x.test\r\nSubject: hi\r\n\r\nbody\r\n";
+const RSA_SHA1_KEY: &str = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlLPTxfpgiUygpMZ302O5iFuZBE8v8Pl4SCHIZp9dt58oWeAz8mKIwz3ut0oXtOFLSPkXv1jEYp081AJK/sAVGKgmJLf7ngukcpNv0xj/x4LPXgMMwLuiJ8uZlcWCe1vlT3vvVtH7Vv2mhSLsQU5hzKoUFV0tMrrI107ilkP2MBqE6ElP60D4bw0ZUU9reqeKAevDfyr3jDRX8r9JBGZAsFdFNJQUZCyFvN9yCvlWfog3Tw9DfQI+LHg7rdgWrWPKtoHoN9O0Ksb8HQGQL0BOVGUSDfl4BggDGpabBy+S0k2kXEA8X5wfFsfuRYcH/oH0Q+aDfJ1EgRYexwECx4RAYwIDAQAB";
+
+#[tokio::test]
+async fn an_rsa_sha1_signature_is_never_a_pass() {
+    // RFC 8301 3.1: verifiers must not consider rsa-sha1 signatures valid.
+    let cache = TxtCache::new(64);
+    cache.insert_record(
+        "s1._domainkey.bank.test.",
+        dkim_key_record(&format!("v=DKIM1; k=rsa; p={RSA_SHA1_KEY}")),
+        DAY,
+    );
+    cache.insert_record("_dmarc.bank.test.", dmarc_record("v=DMARC1; p=reject"), DAY);
+    cache.insert_record("_dmarc.test.", not_found_record(), DAY);
+    let verdict = authenticate(
+        RSA_SHA1_SIGNED.as_bytes(),
+        &AuthOptions::default(),
+        &no_dns(),
+        &cache,
+    )
+    .await
+    .unwrap();
+    assert_eq!(verdict.dkim.len(), 1, "{verdict:?}");
+    assert_eq!(verdict.dkim[0].result, Outcome::PermError);
+    assert_eq!(verdict.dkim[0].domain.as_deref(), Some("bank.test"));
+    assert!(verdict.dkim[0]
+        .reason
+        .as_deref()
+        .is_some_and(|r| r.contains("rsa-sha1")));
+    assert_eq!(verdict.dmarc, Outcome::Fail);
+    assert_eq!(verdict.summary, Outcome::Fail);
+}
+
+#[tokio::test]
+async fn a_signature_that_does_not_cover_from_is_never_a_pass() {
+    // RFC 6376 6.1.1: h= without From is a PERMFAIL. Signed over To and
+    // Subject only, the From was then rewritten.
+    let cache = TxtCache::new(64);
+    let bank = Domain::new();
+    bank.publish(&cache, "bank.test", "v=DMARC1; p=reject");
+    let key = Ed25519Key::from_pkcs8_der(bank.key.private_key()).unwrap();
+    let original = message("newsletter@bank.test");
+    let signature = DkimSigner::from_key(key)
+        .domain("bank.test")
+        .selector("s1")
+        .headers(["To", "Subject"])
+        .sign(original.as_bytes())
+        .unwrap();
+    let raw = format!("{}{original}", signature.to_header()).replace(
+        "From: newsletter@bank.test",
+        "From: \"Security\" <security@bank.test>",
+    );
+    let verdict = authenticate(raw.as_bytes(), &AuthOptions::default(), &no_dns(), &cache)
+        .await
+        .unwrap();
+    assert_eq!(verdict.dkim.len(), 1, "{verdict:?}");
+    assert_eq!(verdict.dkim[0].result, Outcome::PermError);
+    assert!(verdict.dkim[0]
+        .reason
+        .as_deref()
+        .is_some_and(|r| r.contains("From")));
+    assert_eq!(verdict.summary, Outcome::Fail);
+}

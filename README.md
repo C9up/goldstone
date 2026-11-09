@@ -179,6 +179,10 @@ await authenticate(raw, { ip: "203.0.113.7", helo: "mx.sender.test", mailFrom: "
 - A repeated header is read from its first copy everywhere: `message.from`,
   `message.subject` and `message.header("from")` agree, and every copy stays
   in `message.headers`.
+- A DKIM signature made with rsa-sha1 (RFC 8301), or whose `h=` leaves out
+  From (RFC 6376 §6.1.1), is a `permerror` whatever its cryptography says,
+  and DMARC cannot pass on it: SHA-1 is broken, and a From the signature does
+  not cover can be rewritten at will.
 - A check that cannot complete — DNS down, too slow — is `temperror`,
   never a pass. The whole check has a deadline (10 s by default), at most 5
   DKIM signatures are verified (each is a lookup), and DNS answers are cached.
