@@ -49,6 +49,27 @@ export function reconnectDelay(attempt: number): number {
 
 const DEFAULT_MAX_BYTES = 25 * 1024 * 1024;
 
+/**
+ * Room for what is not a message in one response: SEARCH answers for a big
+ * mailbox, the framing around a literal.
+ */
+const RESPONSE_ROOM = 64 * 1024 * 1024;
+
+/** imapflow's codes for a response it stopped reading at the cap. */
+const OVERSIZED = new Set([
+	"LiteralTooLarge",
+	"ResponseTooLarge",
+	"LineTooLarge",
+]);
+
+function oversized(error: unknown): boolean {
+	const code: unknown =
+		typeof error === "object" && error !== null
+			? Reflect.get(error, "code")
+			: undefined;
+	return typeof code === "string" && OVERSIZED.has(code);
+}
+
 export interface MailboxOptions {
 	/** Bounds on every message read. */
 	limits?: Limits;
@@ -70,6 +91,7 @@ export class Mailbox {
 	readonly #remoteContent: ParseOptions["remoteContent"];
 	#client: Promise<ImapFlow> | undefined;
 	readonly #watches = new Set<() => Promise<void>>();
+	readonly #cutOff = new WeakMap<ImapFlow, unknown>();
 
 	constructor(
 		name: string,
@@ -183,6 +205,19 @@ export class Mailbox {
 					if (message) await handler(message, { uid });
 				} catch (error) {
 					report(error);
+					// The connection is gone (a server pushing more than the
+					// limit is cut off): what is left is delivered after the
+					// reconnection, not skipped as if it had failed. A message
+					// over the limit is skipped: it would be refused again.
+					if (!client.usable) {
+						if (
+							error instanceof GoldstoneError &&
+							error.code === "E_GOLDSTONE_MESSAGE_TOO_LARGE"
+						) {
+							last = uid;
+						}
+						return;
+					}
 				}
 				last = uid;
 			}
@@ -274,11 +309,25 @@ export class Mailbox {
 				`[inbox] message ${uid} is ${sized.size} bytes, over the ${maxBytes} allowed — not downloaded`,
 			);
 		}
-		const full = await client.fetchOne(
-			String(uid),
-			{ uid: true, source: true },
-			{ uid: true },
-		);
+		// The server's size is a claim: the connection itself refuses a
+		// literal over the limit, before buffering it.
+		let full: Awaited<ReturnType<ImapFlow["fetchOne"]>>;
+		try {
+			full = await client.fetchOne(
+				String(uid),
+				{ uid: true, source: true },
+				{ uid: true },
+			);
+		} catch (error) {
+			if (oversized(error) || oversized(this.#cutOff.get(client))) {
+				throw new GoldstoneError(
+					"E_GOLDSTONE_MESSAGE_TOO_LARGE",
+					`[inbox] message ${uid} is over the ${maxBytes} bytes allowed, whatever size the server reported — not downloaded`,
+					{ cause: error },
+				);
+			}
+			throw error;
+		}
 		if (full === false || full === undefined || full.source === undefined) {
 			return undefined;
 		}
@@ -333,7 +382,13 @@ export class Mailbox {
 								? await config.auth.accessToken()
 								: config.auth.accessToken,
 					};
+		const maxBytes = this.#limits?.maxBytes ?? DEFAULT_MAX_BYTES;
 		const client = new ImapFlow({
+			// Whatever the server says a message weighs, never buffer more
+			// than the limit for one, nor much more for any response.
+			maxLiteralSize: maxBytes,
+			maxResponseSize: Math.max(maxBytes, RESPONSE_ROOM) + 64 * 1024,
+			maxLineLength: Math.max(maxBytes, RESPONSE_ROOM),
 			host: config.host,
 			port: config.port ?? (secure ? 993 : 143),
 			secure,
@@ -351,7 +406,11 @@ export class Mailbox {
 			// new-message notification by as much.
 			autoIdleDelay: 1000,
 		});
-		client.on("error", () => {});
+		// The error that cut the connection, which a pending fetch does not
+		// always reject with.
+		client.on("error", (error: unknown) => {
+			this.#cutOff.set(client, error);
+		});
 		await client.connect();
 		return client;
 	}

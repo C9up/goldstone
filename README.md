@@ -66,7 +66,11 @@ const stop = support.watch(async (message, { uid }) => {
   none delivered twice. A handler that throws is reported to `onError` and
   the watch goes on.
 - A message's size is asked of the server before it is downloaded: one over
-  `limits.maxBytes` is refused without being fetched.
+  `limits.maxBytes` is refused without being fetched. The answer is only a
+  claim, so the connection also refuses any message literal over
+  `maxBytes` (and caps every response) before buffering it: a server that
+  lies about the size, or leaves it out, is cut off with
+  `E_GOLDSTONE_MESSAGE_TOO_LARGE` instead of pushing a gigabyte into memory.
 - The provider logs out of every mailbox on shutdown, so an IDLE connection
   does not keep the process alive.
 
