@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	createMailgunInboundHandler,
 	type InboundHttpContext,
@@ -185,6 +185,34 @@ describe("createMailgunInboundHandler", () => {
 		).toThrow(expect.objectContaining({ code: "E_GOLDSTONE_INVALID_CONFIG" }));
 	});
 
+	it.each([Number.NaN, Number.POSITIVE_INFINITY, 0, -5, 1.5, 86_401])(
+		"refuses to be created with maxAgeSeconds %s",
+		(maxAgeSeconds) => {
+			expect(() =>
+				createMailgunInboundHandler({
+					signingKey: KEY,
+					maxAgeSeconds,
+					onMessage: () => {},
+				}),
+			).toThrow(
+				expect.objectContaining({ code: "E_GOLDSTONE_INVALID_CONFIG" }),
+			);
+		},
+	);
+
+	it("refuses a year-old signed request and its replays, with the default window", async () => {
+		const { handle, received } = handler();
+		const old = signed({}, Math.floor(Date.now() / 1000) - 31_536_000);
+		const statuses: (number | undefined)[] = [];
+		for (let i = 0; i < 3; i++) {
+			const { ctx, sent } = context(old);
+			await handle(ctx);
+			statuses.push(sent.status);
+		}
+		expect(statuses).toEqual([401, 401, 401]);
+		expect(received).toHaveLength(0);
+	});
+
 	it("checks DKIM and DMARC by default, the envelope sender as MAIL FROM", async () => {
 		const { handle, received } = handler({ authenticate: undefined });
 		await handle(context(signed()).ctx);
@@ -203,8 +231,24 @@ describe("MemoryReplayGuard", () => {
 		// Full: the oldest gives way.
 		expect(guard.claim("c", 60)).toBe(true);
 		expect(guard.claim("a", 60)).toBe(true);
-		// Expired immediately: free again.
-		expect(guard.claim("d", 0)).toBe(true);
-		expect(guard.claim("d", 60)).toBe(true);
+		// Expired: free again.
+		vi.useFakeTimers({ now: Date.now() });
+		try {
+			expect(guard.claim("d", 1)).toBe(true);
+			expect(guard.claim("d", 60)).toBe(false);
+			vi.advanceTimersByTime(1_001);
+			expect(guard.claim("d", 60)).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
+
+	it.each([Number.NaN, Number.POSITIVE_INFINITY, 0, -5])(
+		"refuses %s as a TTL: NaN would keep nothing, and let a replay through",
+		(ttl) => {
+			expect(() => new MemoryReplayGuard().claim("t", ttl)).toThrow(
+				expect.objectContaining({ code: "E_GOLDSTONE_INVALID_OPTIONS" }),
+			);
+		},
+	);
 });

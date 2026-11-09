@@ -48,7 +48,10 @@ export interface MailgunInboundOptions {
 	/** The webhook signing key (Mailgun → Settings → Webhooks). */
 	signingKey: string;
 	onMessage: (message: ReceivedMessage, meta: InboundMeta) => unknown;
-	/** A signed request older than this is refused. Default 120 (Mailgun's own guidance). */
+	/**
+	 * A signed request older than this is refused. An integer from 1 to
+	 * 86 400; default 120 (Mailgun's own guidance).
+	 */
 	maxAgeSeconds?: number;
 	/** Default: tokens kept in this process's memory. */
 	replayGuard?: ReplayGuard;
@@ -80,6 +83,9 @@ function sameSignature(expected: Buffer, given: string): boolean {
 	return timingSafeEqual(expected, Buffer.from(given, "hex"));
 }
 
+/** A day: a signature older than that is not a delivery, it is a replay. */
+const MAX_AGE_LIMIT = 86_400;
+
 export function createMailgunInboundHandler(
 	options: MailgunInboundOptions,
 ): Handler {
@@ -91,6 +97,14 @@ export function createMailgunInboundHandler(
 	}
 	const { signingKey, onMessage } = options;
 	const maxAge = options.maxAgeSeconds ?? 120;
+	// The freshness window is a security switch: NaN or Infinity would turn
+	// the timestamp check and the replay guard off without a word.
+	if (!(Number.isInteger(maxAge) && maxAge >= 1 && maxAge <= MAX_AGE_LIMIT)) {
+		throw new GoldstoneError(
+			"E_GOLDSTONE_INVALID_CONFIG",
+			`createMailgunInboundHandler: maxAgeSeconds must be an integer from 1 to ${MAX_AGE_LIMIT}, got ${String(maxAge)}`,
+		);
+	}
 	const guard = options.replayGuard ?? new MemoryReplayGuard();
 
 	return async (ctx) => {

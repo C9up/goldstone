@@ -87,7 +87,10 @@ Point the Mailgun route's *forward* action at a URL ending in `mime`: that is
 what makes Mailgun send the message as received.
 
 Mailgun signs a timestamp and a token — not the message. So the handler
-refuses a timestamp older than two minutes and handles each token once,
+refuses a timestamp older than two minutes (`maxAgeSeconds`, an integer
+from 1 to 86 400 — anything else is refused when the handler is created,
+since a `NaN` read from an unset variable would turn the check off) and
+handles each token once,
 claimed before handling so two racing requests cannot both get through; a
 delivery whose handler throws gives its token back, and Mailgun's retry is
 handled. Fields are read from the request body only, never the query string.
