@@ -157,8 +157,8 @@ fn attachment_names_cannot_leave_their_directory() {
         (Some("../../etc/passwd"), "passwd"),
         (Some("..\\..\\windows\\win.ini"), "win.ini"),
         (Some("/etc/shadow"), "shadow"),
-        (Some("a\0.exe"), "a.exe"),
-        (Some("evil\r\nX-Injected: 1"), "evilX-Injected: 1"),
+        (Some("a\0.exe"), "a_.exe"),
+        (Some("evil\r\nX-Injected: 1"), "evil__X-Injected_ 1"),
         (Some(".."), "attachment-3"),
         (Some(".htaccess"), "htaccess"),
         (Some("con.txt"), "_con.txt"),
@@ -548,4 +548,33 @@ fn remote_content_is_kept_when_asked_for() {
     let html = m.html.unwrap();
     assert!(html.contains("https://tracker.evil.test/open"), "{html}");
     assert!(html.contains(r#"src="cid:logo@corp.test""#), "{html}");
+}
+
+#[test]
+fn attachment_names_are_safe_on_windows_too() {
+    let cases = [
+        // An NTFS alternate data stream: writes into x.exe's Mark of the Web.
+        ("report.txt:Zone.Identifier", "report.txt_Zone.Identifier"),
+        // Right-to-left override: shown as invoiceexe.pdf.
+        ("invoice\u{202e}fdp.exe", "invoice_fdp.exe"),
+        ("a\u{200b}b\u{2066}c\u{feff}.txt", "a_b_c_.txt"),
+        ("a<b>c|d?e*f\".txt", "a_b_c_d_e_f_.txt"),
+        ("CON .txt", "_CON .txt"),
+        ("CONIN$", "_CONIN$"),
+        ("conout$.log", "_conout$.log"),
+        ("COM\u{b9}.txt", "_COM\u{b9}.txt"),
+        ("lpt\u{b3}", "_lpt\u{b3}"),
+        ("COM0.txt", "_COM0.txt"),
+        ("lpt0", "_lpt0"),
+        ("console.txt", "console.txt"),
+        ("com10.txt", "com10.txt"),
+    ];
+    for (name, expected) in cases {
+        assert_eq!(safe_file_name(Some(name), 0), expected, "for {name:?}");
+    }
+    // The cut at 255 bytes must not leave a trailing dot or space behind.
+    let long = format!("{}. .exe", "a".repeat(253));
+    let safe = safe_file_name(Some(&long), 0);
+    assert!(safe.len() <= 255, "{}", safe.len());
+    assert!(!safe.ends_with(['.', ' ']), "{safe:?}");
 }

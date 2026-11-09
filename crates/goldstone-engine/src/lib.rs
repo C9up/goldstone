@@ -462,30 +462,113 @@ fn ids(value: &HeaderValue<'_>) -> Vec<String> {
     }
 }
 
-/// Windows refuses these as file names, with any extension.
-const RESERVED: [&str; 22] = [
-    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
-    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+/// Windows opens a device for these names, with any extension and with
+/// spaces before it.
+const RESERVED: [&str; 32] = [
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    "conin$",
+    "conout$",
+    "com0",
+    "com1",
+    "com2",
+    "com3",
+    "com4",
+    "com5",
+    "com6",
+    "com7",
+    "com8",
+    "com9",
+    "com\u{b9}",
+    "com\u{b2}",
+    "com\u{b3}",
+    "lpt0",
+    "lpt1",
+    "lpt2",
+    "lpt3",
+    "lpt4",
+    "lpt5",
+    "lpt6",
+    "lpt7",
+    "lpt8",
+    "lpt9",
+    "lpt\u{b9}",
+    "lpt\u{b2}",
+    "lpt\u{b3}",
 ];
 
-/// A name that cannot leave the directory it is saved to: the last path
-/// segment only (both separators), no control characters, no leading dots,
-/// no Windows device name, at most 255 bytes. What is left of a hostile name
-/// may be nothing; it becomes `attachment-<n>`.
+/// Characters Windows refuses in a name; `:` also names an NTFS stream.
+const WINDOWS_INVALID: [char; 7] = ['<', '>', ':', '"', '|', '?', '*'];
+
+/// Unicode format characters (category Cf): invisible, and the bidi ones
+/// reorder what is shown (`invoice\u{202e}fdp.exe` reads `invoiceexe.pdf`).
+fn is_format(c: char) -> bool {
+    matches!(
+        c,
+        '\u{ad}'
+            | '\u{600}'..='\u{605}'
+            | '\u{61c}'
+            | '\u{6dd}'
+            | '\u{70f}'
+            | '\u{890}'..='\u{891}'
+            | '\u{8e2}'
+            | '\u{180e}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206f}'
+            | '\u{feff}'
+            | '\u{fff9}'..='\u{fffb}'
+            | '\u{110bd}'
+            | '\u{110cd}'
+            | '\u{13430}'..='\u{1343f}'
+            | '\u{1bca0}'..='\u{1bca3}'
+            | '\u{1d173}'..='\u{1d17a}'
+            | '\u{e0001}'
+            | '\u{e0020}'..='\u{e007f}'
+    )
+}
+
+fn trim_name(name: &str) -> &str {
+    name.trim()
+        .trim_start_matches('.')
+        .trim_end_matches(['.', ' '])
+}
+
+/// A name that cannot leave the directory it is saved to, nor mean anything
+/// else than a file there, on any system: the last path segment only (both
+/// separators); control, format (bidi) and Windows-invalid characters
+/// replaced by `_`; no leading dots, no trailing dots or spaces; no Windows
+/// device name; at most 255 bytes. What is left of a hostile name may be
+/// nothing; it becomes `attachment-<n>`.
 pub fn safe_file_name(name: Option<&str>, index: usize) -> String {
     let fallback = || format!("attachment-{}", index + 1);
     let Some(name) = name else { return fallback() };
     let last = name.rsplit(['/', '\\']).next().unwrap_or("");
-    let cleaned: String = last.chars().filter(|c| !c.is_control()).collect();
-    let cleaned = cleaned
-        .trim()
-        .trim_start_matches('.')
-        .trim_end_matches(['.', ' ']);
+    let replaced: String = last
+        .chars()
+        .map(|c| {
+            if c.is_control() || is_format(c) || WINDOWS_INVALID.contains(&c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let cleaned = trim_name(&replaced);
     if cleaned.is_empty() {
         return fallback();
     }
-    let stem = cleaned.split('.').next().unwrap_or("").to_ascii_lowercase();
-    let mut safe = if RESERVED.contains(&stem.as_str()) {
+    let stem = cleaned
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end()
+        .to_lowercase();
+    let reserved = RESERVED.contains(&stem.as_str());
+    let mut safe = if reserved {
         format!("_{cleaned}")
     } else {
         cleaned.to_owned()
@@ -496,6 +579,12 @@ pub fn safe_file_name(name: Option<&str>, index: usize) -> String {
             cut -= 1;
         }
         safe.truncate(cut);
+        // The cut can leave a trailing dot or space, which Windows drops.
+        let kept = safe.trim_end_matches(['.', ' ']).len();
+        safe.truncate(kept);
+    }
+    if safe.is_empty() {
+        return fallback();
     }
     safe
 }

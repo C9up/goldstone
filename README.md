@@ -145,9 +145,12 @@ input from whoever sent it, so:
   `html` is then absent and `htmlError` says why
   (`E_GOLDSTONE_HTML_TOO_LARGE`, `…_HTML_TOO_DEEP`, `…_HTML_TOO_COMPLEX`);
   the message, its text and its attachments are read as usual;
-- **`fileName` is safe to save under**: the last path segment of what the
-  sender wrote, without control characters, leading dots or a Windows device
-  name. What the sender wrote stays in `originalName`, for display only.
+- **`fileName` is safe to save under**, on any system: the last path segment
+  of what the sender wrote, with control, invisible and bidi characters and
+  the characters Windows refuses (`< > : " | ? *` — a `:` would write into an
+  NTFS stream) replaced by `_`, without leading dots, trailing dots or
+  spaces, or a Windows device name (`CON`, `COM1`, `CONIN$`…). A right-to-left
+  override cannot dress `fdp.exe` up as `exe.pdf`. What the sender wrote stays in `originalName`, for display only.
 
 The engine is a native binary, prebuilt for Linux, macOS and Windows; there is
 no JavaScript fallback.

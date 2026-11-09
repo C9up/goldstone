@@ -62,8 +62,11 @@ export interface Header {
 
 export interface Attachment {
 	/**
-	 * Safe to save under: the last path segment of what the sender wrote,
-	 * without control characters, leading dots or a Windows device name.
+	 * Safe to save under, on any system: the last path segment of what the
+	 * sender wrote, with control, invisible and bidi characters and the
+	 * characters Windows refuses (`< > : " | ? *`, `:` naming an NTFS stream)
+	 * replaced by `_`, without leading dots, trailing dots or spaces, or a
+	 * Windows device name (`CON`, `COM1`, `CONIN$`…), at most 255 bytes.
 	 */
 	readonly fileName: string;
 	/** The name as the sender wrote it. For display only — never a path. */
