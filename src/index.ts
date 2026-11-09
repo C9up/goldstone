@@ -45,6 +45,7 @@ export {
 	type Header,
 	type Limits,
 	type Mailbox as Address,
+	type ParseOptions,
 	parseMessage,
 	type ReadOptions,
 	ReceivedMessage,

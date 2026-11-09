@@ -17,7 +17,7 @@
  */
 
 import { GoldstoneError } from "./errors.js";
-import type { Limits } from "./ReceivedMessage.js";
+import type { Limits, ParseOptions } from "./ReceivedMessage.js";
 
 export interface PasswordAuth {
 	user: string;
@@ -74,6 +74,11 @@ export interface InboxConfig<Mailboxes extends Record<string, MailboxConfig>> {
 	 * `message.authenticity`.
 	 */
 	authenticate?: boolean;
+	/**
+	 * Remote content in `message.html`: `"block"` (the default) or
+	 * `"allow"`; see {@link ParseOptions}.
+	 */
+	remoteContent?: ParseOptions["remoteContent"];
 }
 
 /**

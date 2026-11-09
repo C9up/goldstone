@@ -17,6 +17,16 @@ export interface JsLimits {
 	maxHtmlBytes?: number;
 }
 
+/** What the sanitized HTML may load by itself. */
+
+export interface JsHtmlOptions {
+	/**
+	 * Keep remote images and other URLs a browser loads unasked. Default
+	 * false.
+	 */
+	remoteContent?: boolean;
+}
+
 export interface JsMailbox {
 	name?: string;
 	address?: string;
@@ -99,6 +109,7 @@ export interface JsReadMessage {
 export declare function parseMessage(
 	raw: Buffer,
 	limits?: JsLimits | undefined | null,
+	html?: JsHtmlOptions | undefined | null,
 ): Promise<JsMessage>;
 
 /**
@@ -121,4 +132,5 @@ export declare function readMessage(
 	raw: Buffer,
 	limits?: JsLimits | undefined | null,
 	options?: JsAuthOptions | undefined | null,
+	html?: JsHtmlOptions | undefined | null,
 ): Promise<JsReadMessage>;

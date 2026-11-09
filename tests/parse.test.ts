@@ -105,7 +105,9 @@ describe("parseMessage", () => {
 describe("parseMessage — limits", () => {
 	it("refuses an oversized message before parsing it", async () => {
 		expect(
-			await codeOf(() => parseMessage(new Uint8Array(101), { maxBytes: 100 })),
+			await codeOf(() =>
+				parseMessage(new Uint8Array(101), { limits: { maxBytes: 100 } }),
+			),
 		).toBe("E_GOLDSTONE_MESSAGE_TOO_LARGE");
 	});
 
@@ -124,7 +126,9 @@ describe("parseMessage — limits", () => {
 		);
 		expect(
 			await codeOf(() =>
-				parseMessage(bytes(HEAD + multipart("P", parts)), { maxParts: 10 }),
+				parseMessage(bytes(HEAD + multipart("P", parts)), {
+					limits: { maxParts: 10 },
+				}),
 			),
 		).toBe("E_GOLDSTONE_TOO_MANY_PARTS");
 
@@ -134,7 +138,7 @@ describe("parseMessage — limits", () => {
 		expect(
 			await codeOf(() =>
 				parseMessage(bytes(HEAD + multipart("A", files)), {
-					maxAttachments: 2,
+					limits: { maxAttachments: 2 },
 				}),
 			),
 		).toBe("E_GOLDSTONE_TOO_MANY_ATTACHMENTS");
@@ -143,7 +147,7 @@ describe("parseMessage — limits", () => {
 				parseMessage(
 					bytes(HEAD + multipart("A", [attachment("b.pdf", "AAAAAAAA")])),
 					{
-						maxAttachmentBytes: 4,
+						limits: { maxAttachmentBytes: 4 },
 					},
 				),
 			),
@@ -154,7 +158,9 @@ describe("parseMessage — limits", () => {
 		"refuses %s as a limit",
 		async (value) => {
 			expect(
-				await codeOf(() => parseMessage(bytes(HEAD), { maxParts: value })),
+				await codeOf(() =>
+					parseMessage(bytes(HEAD), { limits: { maxParts: value } }),
+				),
 			).toBe("E_GOLDSTONE_INVALID_LIMITS");
 		},
 	);
@@ -244,7 +250,7 @@ describe("parseMessage — hostile HTML", () => {
 
 	it("does not sanitize HTML over maxHtmlBytes, and reads the rest", async () => {
 		const m = await parseMessage(html("<p>hello</p>".repeat(100)), {
-			maxHtmlBytes: 100,
+			limits: { maxHtmlBytes: 100 },
 		});
 		expect(m.subject).toBe("Facture n° 42");
 		expect(m.html).toBeUndefined();
@@ -272,10 +278,14 @@ describe("parseMessage — structure bounded before parsing", () => {
 
 	it("bounds headers with maxHeaders and maxHeaderBytes", async () => {
 		expect(
-			await codeOf(() => parseMessage(bytes(HEAD), { maxHeaders: 3 })),
+			await codeOf(() =>
+				parseMessage(bytes(HEAD), { limits: { maxHeaders: 3 } }),
+			),
 		).toBe("E_GOLDSTONE_TOO_MANY_HEADERS");
 		expect(
-			await codeOf(() => parseMessage(bytes(HEAD), { maxHeaderBytes: 64 })),
+			await codeOf(() =>
+				parseMessage(bytes(HEAD), { limits: { maxHeaderBytes: 64 } }),
+			),
 		).toBe("E_GOLDSTONE_HEADERS_TOO_LARGE");
 	});
 
@@ -290,5 +300,33 @@ describe("parseMessage — structure bounded before parsing", () => {
 		expect(await codeOf(() => parseMessage(bytes(HEAD + inner)))).toBe(
 			"E_GOLDSTONE_TOO_DEEP",
 		);
+	});
+});
+
+describe("parseMessage — remote content", () => {
+	const tracked = bytes(
+		`${HEAD}Content-Type: text/html\r\n\r\n<p>Hi</p><img src="https://tracker.evil.test/open?u=victim" width="1" height="1"><img src="cid:logo@corp.test"><a href="https://evil.test/login">Bank</a>\r\n`,
+	);
+
+	it("blocks what a browser would load by itself, keeps cid: and links", async () => {
+		const m = await parseMessage(tracked);
+		expect(m.html).not.toContain("tracker.evil.test");
+		expect(m.html).toContain('src="cid:logo@corp.test"');
+		expect(m.html).toContain('href="https://evil.test/login"');
+	});
+
+	it("keeps remote content when the application allows it", async () => {
+		const m = await parseMessage(tracked, { remoteContent: "allow" });
+		expect(m.html).toContain("https://tracker.evil.test/open");
+	});
+
+	it("refuses a remoteContent that is neither block nor allow", async () => {
+		expect(
+			await codeOf(() =>
+				parseMessage(tracked, {
+					remoteContent: JSON.parse('"yes"'),
+				}),
+			),
+		).toBe("E_GOLDSTONE_INVALID_OPTIONS");
 	});
 });

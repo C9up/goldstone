@@ -106,7 +106,7 @@ message.subject
 message.from            // [{ name, address }]
 message.date            // Date
 message.text
-message.html            // sanitized: safe to render
+message.html            // sanitized: safe to render, loads nothing remote
 message.attachments     // [{ fileName, originalName, contentType, size, content, … }]
 message.header("List-Unsubscribe")
 ```
@@ -123,13 +123,19 @@ input from whoever sent it, so:
   before the parse too, by one pass over the bytes, so a message made of
   millions of tiny parts or headers is refused before it costs any memory.
   Each limit has a default and can be set per call
-  (`parseMessage(raw, { maxBytes })`); over one, a `GoldstoneError` names it
+  (`parseMessage(raw, { limits: { maxBytes } })`); over one, a `GoldstoneError` names it
   (`E_GOLDSTONE_MESSAGE_TOO_LARGE`, `…_TOO_MANY_PARTS`, `…_TOO_DEEP`,
   `…_TOO_MANY_HEADERS`, `…_HEADERS_TOO_LARGE`, `…_TOO_MANY_ATTACHMENTS`,
   `…_ATTACHMENT_TOO_LARGE`). The pass before the parse counts generously: a
   body line holding `--` counts as a place a part may start, so a text body
   with thousands of such lines can need a higher `maxParts`;
-- **`html` is sanitized** — no script, no event handler, no `javascript:` URL.
+- **`html` is sanitized** — no script, no event handler, no `javascript:` URL,
+  and nothing a browser would load by itself: remote images, backgrounds and
+  posters are removed, because loading one tells the sender the message was
+  opened, when and from where. `cid:` references to the message's own parts
+  stay, and so do links, which are only followed when clicked. An application
+  that shows remote content on purpose passes `remoteContent: "allow"` (to
+  `parseMessage`, `readMessage`, the inbox config or the Mailgun handler).
   The HTML as received is only reachable through `unsanitizedHtml()`, for what
   has to see the original; never render it;
 - **the HTML is bounded before it is sanitized**: over `maxHtmlBytes`

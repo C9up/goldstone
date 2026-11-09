@@ -19,6 +19,7 @@ import { assertSecure, type MailboxConfig } from "./config.js";
 import { GoldstoneError } from "./errors.js";
 import {
 	type Limits,
+	type ParseOptions,
 	type ReceivedMessage,
 	readMessage,
 } from "./ReceivedMessage.js";
@@ -57,6 +58,8 @@ export interface MailboxOptions {
 	 * and a From nobody checked is the From a phisher wrote.
 	 */
 	authenticate?: boolean;
+	/** Remote content in `message.html`; see {@link ParseOptions}. Default `"block"`. */
+	remoteContent?: ParseOptions["remoteContent"];
 }
 
 export class Mailbox {
@@ -64,6 +67,7 @@ export class Mailbox {
 	readonly #config: MailboxConfig;
 	readonly #limits: Limits | undefined;
 	readonly #authenticate: boolean;
+	readonly #remoteContent: ParseOptions["remoteContent"];
 	#client: Promise<ImapFlow> | undefined;
 	readonly #watches = new Set<() => Promise<void>>();
 
@@ -77,6 +81,7 @@ export class Mailbox {
 		this.#config = config;
 		this.#limits = options.limits;
 		this.#authenticate = options.authenticate ?? true;
+		this.#remoteContent = options.remoteContent;
 	}
 
 	/** Every folder's path, as the server names it. */
@@ -280,6 +285,7 @@ export class Mailbox {
 		return readMessage(full.source, {
 			limits: this.#limits,
 			authenticate: this.#authenticate,
+			remoteContent: this.#remoteContent,
 		});
 	}
 

@@ -36,6 +36,7 @@ export class InboxManager<
 		const mailbox = new Mailbox(name, config, {
 			limits: this.#config.limits,
 			authenticate: this.#config.authenticate,
+			remoteContent: this.#config.remoteContent,
 		});
 		this.#open.set(name, mailbox);
 		return mailbox;

@@ -509,3 +509,43 @@ fn carried_messages_within_bounds_are_read() {
         assert_eq!(m.attachments.len(), 1, "{raw}");
     }
 }
+
+const TRACKED: &str = r#"<p>Hi</p><img src="https://tracker.evil.test/open?u=victim@corp.test" width="1" height="1"><img srcset="https://evil.test/a.png 2x" src="//evil.test/b.png"><img src="/relative.png"><table background="http://evil.test/bg.png"><tr><td>x</td></tr></table><video poster="https://evil.test/p.png"></video><img src="cid:logo@corp.test" alt="logo"><a href="https://evil.test/login">Bank</a>"#;
+
+#[test]
+fn sanitized_html_fetches_nothing_by_default() {
+    // Rendering it must not tell the sender the message was read.
+    let m = parse(html_message(TRACKED).as_bytes(), &Limits::default()).unwrap();
+    let html = m.html.unwrap();
+    for fetched in [
+        "tracker.evil.test",
+        "a.png",
+        "b.png",
+        "relative.png",
+        "bg.png",
+        "p.png",
+    ] {
+        assert!(!html.contains(fetched), "{fetched} survived: {html}");
+    }
+    assert!(html.contains(r#"src="cid:logo@corp.test""#), "{html}");
+    assert!(
+        html.contains(r#"href="https://evil.test/login""#),
+        "a link is followed only when clicked"
+    );
+}
+
+#[test]
+fn remote_content_is_kept_when_asked_for() {
+    let policy = goldstone_engine::HtmlPolicy {
+        remote_content: true,
+    };
+    let m = goldstone_engine::parse_with(
+        html_message(TRACKED).as_bytes(),
+        &Limits::default(),
+        &policy,
+    )
+    .unwrap();
+    let html = m.html.unwrap();
+    assert!(html.contains("https://tracker.evil.test/open"), "{html}");
+    assert!(html.contains(r#"src="cid:logo@corp.test""#), "{html}");
+}

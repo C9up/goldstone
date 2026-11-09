@@ -20,6 +20,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 /// Deeper than this, the HTML is not sanitized. Real mail nests a few dozen
 /// levels; the tree builder's cost grows with the square of the depth.
@@ -34,6 +35,56 @@ const NODES_FLOOR: usize = 4096;
 /// Bytes handed to the counting parser at a time: the budget is checked
 /// between two feeds, so this bounds how far past it one feed can go.
 const FEED: usize = 64;
+
+/// Attributes whose URL a browser loads on its own, without a click.
+const FETCHED: [&str; 11] = [
+    "src",
+    "srcset",
+    "background",
+    "poster",
+    "lowsrc",
+    "dynsrc",
+    "data",
+    "longdesc",
+    "action",
+    "formaction",
+    "xlink:href",
+];
+
+/// Sanitize HTML that passed [`check`]: ammonia's defaults, `cid:` URLs
+/// allowed (the message's own parts), and unless `remote_content`, no URL a
+/// browser would load by itself — a remote image is a read receipt the
+/// reader never agreed to send.
+pub fn sanitize(html: &str, remote_content: bool) -> String {
+    static BLOCKING: OnceLock<ammonia::Builder<'static>> = OnceLock::new();
+    static ALLOWING: OnceLock<ammonia::Builder<'static>> = OnceLock::new();
+    let builder = if remote_content {
+        ALLOWING.get_or_init(|| {
+            let mut builder = ammonia::Builder::default();
+            builder.add_url_schemes(["cid"]);
+            builder
+        })
+    } else {
+        BLOCKING.get_or_init(|| {
+            let mut builder = ammonia::Builder::default();
+            builder
+                .add_url_schemes(["cid"])
+                .attribute_filter(|_, attribute, value| {
+                    let own_part = value
+                        .trim_start()
+                        .get(..4)
+                        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("cid:"));
+                    if FETCHED.contains(&attribute) && !own_part {
+                        None
+                    } else {
+                        Some(value.into())
+                    }
+                });
+            builder
+        })
+    };
+    builder.clean(html).to_string()
+}
 
 /// Elements that never hold content: a start tag does not open a level.
 const VOID: [&[u8]; 14] = [

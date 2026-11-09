@@ -26,6 +26,7 @@ import type { AuthenticateOptions } from "../authenticity.js";
 import { GoldstoneError } from "../errors.js";
 import {
 	type Limits,
+	type ParseOptions,
 	type ReceivedMessage,
 	readMessage,
 } from "../ReceivedMessage.js";
@@ -54,6 +55,8 @@ export interface MailgunInboundOptions {
 	limits?: Limits;
 	/** DKIM / DMARC on each message (`message.authenticity`). Default `true`. */
 	authenticate?: boolean | Omit<AuthenticateOptions, "ip" | "helo">;
+	/** Remote content in `message.html`; see {@link ParseOptions}. Default `"block"`. */
+	remoteContent?: ParseOptions["remoteContent"];
 }
 
 type Handler = (
@@ -156,6 +159,7 @@ export function createMailgunInboundHandler(
 			message = await readMessage(Buffer.from(mime, "utf8"), {
 				limits: options.limits,
 				authenticate,
+				remoteContent: options.remoteContent,
 			});
 		} catch (error) {
 			if (error instanceof GoldstoneError) {

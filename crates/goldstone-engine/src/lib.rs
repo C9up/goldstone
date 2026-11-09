@@ -239,9 +239,24 @@ pub struct Message {
     pub attachments: Vec<Attachment>,
 }
 
-/// Parse one received message: [`parse_mail`], then [`message_of`].
+/// How the sanitized HTML may reach outside the message.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HtmlPolicy {
+    /// Keep the URLs a browser fetches by itself (images, backgrounds,
+    /// posters). Off by default: loading them tells the sender the message
+    /// was opened, when and from where. `cid:` references to the message's
+    /// own parts are kept either way.
+    pub remote_content: bool,
+}
+
+/// Parse one received message: [`parse_mail`], then [`message_of`], remote
+/// content blocked.
 pub fn parse(raw: &[u8], limits: &Limits) -> Result<Message, ParseError> {
-    message_of(&parse_mail(raw, limits)?, limits)
+    parse_with(raw, limits, &HtmlPolicy::default())
+}
+
+pub fn parse_with(raw: &[u8], limits: &Limits, policy: &HtmlPolicy) -> Result<Message, ParseError> {
+    message_of(&parse_mail(raw, limits)?, limits, policy)
 }
 
 /// The parse everything else reads: the message handed to the application
@@ -280,6 +295,7 @@ pub fn parse_mail<'x>(
 pub fn message_of(
     message: &mail_parser::Message<'_>,
     limits: &Limits,
+    policy: &HtmlPolicy,
 ) -> Result<Message, ParseError> {
     let mut attachments = Vec::with_capacity(message.attachments.len());
     for (index, part) in message.attachments().enumerate() {
@@ -322,7 +338,7 @@ pub fn message_of(
     let (html, html_error) = match unsanitized_html.as_deref() {
         None => (None, None),
         Some(raw) => match html::check(raw, limits.max_html_bytes) {
-            Ok(()) => (Some(ammonia::clean(raw)), None),
+            Ok(()) => (Some(html::sanitize(raw, policy.remote_content)), None),
             Err(refused) => (None, Some(refused)),
         },
     };

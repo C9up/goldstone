@@ -20,7 +20,7 @@ import {
 	nativeOptions,
 } from "./authenticity.js";
 import { fromEngine, GoldstoneError } from "./errors.js";
-import type { JsLimits, JsMessage } from "./native/generated.js";
+import type { JsHtmlOptions, JsLimits, JsMessage } from "./native/generated.js";
 import { engine } from "./native.js";
 
 /** Bounds on one message; each one left out keeps its default. */
@@ -88,7 +88,10 @@ export class ReceivedMessage {
 	readonly references: readonly string[];
 	readonly headers: readonly Header[];
 	readonly text?: string;
-	/** Sanitized for display: no script, no event handler, no `javascript:` URL. */
+	/**
+	 * Sanitized for display: no script, no event handler, no `javascript:`
+	 * URL, and no remote content unless `remoteContent: "allow"`.
+	 */
 	readonly html?: string;
 	/**
 	 * Why `html` is absent although the message has an HTML body: over
@@ -183,6 +186,34 @@ function nativeLimits(limits: Limits | undefined): JsLimits | undefined {
 	return { ...limits };
 }
 
+export interface ParseOptions {
+	limits?: Limits;
+	/**
+	 * Whether the sanitized `html` may load remote content by itself —
+	 * images, backgrounds, video posters. `"block"` (the default) removes
+	 * those URLs: rendering a remote image tells the sender the message was
+	 * opened, when, and from where. `cid:` references to the message's own
+	 * parts are kept either way. Links stay: they are followed only when
+	 * clicked.
+	 */
+	remoteContent?: "block" | "allow";
+}
+
+function htmlOptions(options: ParseOptions): JsHtmlOptions {
+	const { remoteContent } = options;
+	if (
+		remoteContent !== undefined &&
+		remoteContent !== "block" &&
+		remoteContent !== "allow"
+	) {
+		throw new GoldstoneError(
+			"E_GOLDSTONE_INVALID_OPTIONS",
+			`Goldstone: remoteContent must be "block" or "allow", got ${String(remoteContent)}`,
+		);
+	}
+	return { remoteContent: remoteContent === "allow" };
+}
+
 /**
  * Parse one received message — raw RFC 5322 bytes, as IMAP fetches them or
  * a provider posts them. The work runs off the event loop.
@@ -195,27 +226,27 @@ function nativeLimits(limits: Limits | undefined): JsLimits | undefined {
  */
 export async function parseMessage(
 	raw: Uint8Array,
-	limits?: Limits,
+	options: ParseOptions = {},
 ): Promise<ReceivedMessage> {
-	return new ReceivedMessage(await parseNative(raw, limits));
+	return new ReceivedMessage(await parseNative(raw, options));
 }
 
 async function parseNative(
 	raw: Uint8Array,
-	limits: Limits | undefined,
+	options: ParseOptions,
 ): Promise<JsMessage> {
-	const bounds = nativeLimits(limits);
+	const bounds = nativeLimits(options.limits);
+	const html = htmlOptions(options);
 	const bytes = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
 	try {
-		return await engine().parseMessage(bytes, bounds);
+		return await engine().parseMessage(bytes, bounds, html);
 	} catch (error) {
 		if (error instanceof GoldstoneError) throw error;
 		throw fromEngine(error);
 	}
 }
 
-export interface ReadOptions {
-	limits?: Limits;
+export interface ReadOptions extends ParseOptions {
 	/**
 	 * Check DKIM, SPF and DMARC — `true` (the default), `false`, or the
 	 * envelope and bounds {@link authenticate} takes.
@@ -233,9 +264,10 @@ export async function readMessage(
 	options: ReadOptions = {},
 ): Promise<ReceivedMessage> {
 	if (options.authenticate === false) {
-		return new ReceivedMessage(await parseNative(raw, options.limits));
+		return new ReceivedMessage(await parseNative(raw, options));
 	}
 	const bounds = nativeLimits(options.limits);
+	const html = htmlOptions(options);
 	const authOptions = nativeOptions(
 		options.authenticate === true || options.authenticate === undefined
 			? { maxBytes: options.limits?.maxBytes }
@@ -243,7 +275,7 @@ export async function readMessage(
 	);
 	const bytes = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
 	try {
-		const read = await engine().readMessage(bytes, bounds, authOptions);
+		const read = await engine().readMessage(bytes, bounds, authOptions, html);
 		return new ReceivedMessage(read.message, fromNative(read.authenticity));
 	} catch (error) {
 		if (error instanceof GoldstoneError) throw error;

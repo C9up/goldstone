@@ -2,7 +2,7 @@
 //! in, the parsed message out.
 
 use goldstone_engine::auth::{AuthOptions, Envelope, TxtCache, Verdict};
-use goldstone_engine::{Limits, Mailbox, Message, ParseError};
+use goldstone_engine::{HtmlPolicy, Limits, Mailbox, Message, ParseError};
 use mail_auth::MessageAuthenticator;
 use napi::bindgen_prelude::Buffer;
 use napi::{Error, Result, Status};
@@ -21,6 +21,20 @@ pub struct JsLimits {
     pub max_attachments: Option<u32>,
     pub max_attachment_bytes: Option<u32>,
     pub max_html_bytes: Option<u32>,
+}
+
+/// What the sanitized HTML may load by itself.
+#[napi(object)]
+pub struct JsHtmlOptions {
+    /// Keep remote images and other URLs a browser loads unasked. Default
+    /// false.
+    pub remote_content: Option<bool>,
+}
+
+fn policy_of(options: Option<JsHtmlOptions>) -> HtmlPolicy {
+    HtmlPolicy {
+        remote_content: options.and_then(|o| o.remote_content).unwrap_or(false),
+    }
 }
 
 #[napi(object)]
@@ -151,10 +165,16 @@ fn js_message(message: Message) -> JsMessage {
 /// sanitizing are CPU work on bytes a stranger sent. Rejects with
 /// `E_GOLDSTONE_*: …` on a message that breaks a limit or is not a message.
 #[napi]
-pub async fn parse_message(raw: Buffer, limits: Option<JsLimits>) -> Result<JsMessage> {
+pub async fn parse_message(
+    raw: Buffer,
+    limits: Option<JsLimits>,
+    html: Option<JsHtmlOptions>,
+) -> Result<JsMessage> {
     let limits = limits_of(limits);
-    let message = tokio::task::block_in_place(|| goldstone_engine::parse(&raw, &limits))
-        .map_err(engine_error)?;
+    let policy = policy_of(html);
+    let message =
+        tokio::task::block_in_place(|| goldstone_engine::parse_with(&raw, &limits, &policy))
+            .map_err(engine_error)?;
     Ok(js_message(message))
 }
 
@@ -298,15 +318,17 @@ pub async fn read_message(
     raw: Buffer,
     limits: Option<JsLimits>,
     options: Option<JsAuthOptions>,
+    html: Option<JsHtmlOptions>,
 ) -> Result<JsReadMessage> {
     let limits = limits_of(limits);
+    let policy = policy_of(html);
     let options = auth_options(options)?;
     let authenticator = authenticator()?;
     // Sanitizing is CPU work on hostile bytes: off the runtime's async
     // workers too, not only off the JavaScript thread.
     let (parsed, message) = tokio::task::block_in_place(|| {
         let parsed = goldstone_engine::parse_mail(&raw, &limits)?;
-        let message = goldstone_engine::message_of(&parsed, &limits)?;
+        let message = goldstone_engine::message_of(&parsed, &limits, &policy)?;
         Ok((parsed, message))
     })
     .map_err(engine_error)?;
