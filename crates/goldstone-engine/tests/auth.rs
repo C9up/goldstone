@@ -3,7 +3,7 @@
 
 use goldstone_engine::auth::{
     authenticate, dkim_key_record, dmarc_record, not_found_record, spf_record, AuthOptions,
-    Envelope, Outcome, TxtCache,
+    Envelope, Outcome, TxtCache, Verdict,
 };
 use mail_auth::common::crypto::Ed25519Key;
 use mail_auth::common::headers::HeaderWriter;
@@ -247,4 +247,156 @@ fn the_cache_keeps_records_until_their_ttl_and_stays_bounded() {
     // Full: the expired entry makes room.
     cache.insert_record("b.", spf_record("v=spf1 -all"), DAY);
     assert!(cache.get("a.").is_some() && cache.get("b.").is_some());
+}
+
+/// What the application is shown, next to what was checked.
+async fn shown_and_checked(raw: &str, cache: &TxtCache) -> (Vec<Option<String>>, Verdict) {
+    let shown = goldstone_engine::parse(raw.as_bytes(), &goldstone_engine::Limits::default())
+        .map(|m| m.from.into_iter().map(|f| f.address).collect())
+        .unwrap_or_default();
+    let verdict = authenticate(raw.as_bytes(), &AuthOptions::default(), &no_dns(), cache)
+        .await
+        .unwrap();
+    (shown, verdict)
+}
+
+fn attacker_and_bank(cache: &TxtCache) -> Domain {
+    Domain::new().publish(cache, "bank.test", "v=DMARC1; p=reject");
+    let attacker = Domain::new();
+    attacker.publish(cache, "evil.test", "v=DMARC1; p=none");
+    attacker
+}
+
+#[tokio::test]
+async fn a_colon_less_line_cannot_split_the_from_shown_from_the_from_checked() {
+    // mail-auth's own header scanner ended the header block at "X"; the
+    // parser the application reads went on to a second From.
+    let cache = TxtCache::new(64);
+    let attacker = attacker_and_bank(&cache);
+    let raw = attacker.sign(
+        "evil.test",
+        "From: a@evil.test\r\nTo: v@x.test\r\nSubject: hi\r\nX\r\nFrom: ceo@bank.test\r\n\r\nbody\r\n",
+    );
+    let (shown, verdict) = shown_and_checked(&raw, &cache).await;
+    assert_ne!(
+        verdict.summary,
+        Outcome::Pass,
+        "shown {shown:?}: {verdict:?}"
+    );
+    assert!(
+        !shown.contains(&Some("ceo@bank.test".into())) || verdict.summary != Outcome::Pass,
+        "the bank address must never come with a pass"
+    );
+}
+
+#[tokio::test]
+async fn a_pass_only_ever_covers_the_from_the_application_is_shown() {
+    // Header blocks two parsers are known to read differently. The attacker
+    // signs each with its own key; whatever the verdict, a pass must be for
+    // the domain the application shows.
+    let cache = TxtCache::new(64);
+    let attacker = attacker_and_bank(&cache);
+    let corpus = [
+        "From: a@evil.test\r\nTo: v@x.test\r\nSubject: hi\r\nX\r\nFrom: ceo@bank.test\r\n\r\nbody\r\n",
+        "From: a@evil.test\nTo: v@x.test\nSubject: hi\nX\nFrom: ceo@bank.test\n\nbody\n",
+        "From: a@evil.test\r\nTo: v@x.test\r\nSubject: hi\r\n \r\nFrom: ceo@bank.test\r\n\r\nbody\r\n",
+        "From: a@evil.test\r\nTo: v@x.test\r\nSubject: hi\r\n\r\rFrom: ceo@bank.test\r\n\r\nbody\r\n",
+        "From: a@evil.test\r\nTo: v@x.test\r\nSubject: hi\r\nFrom : ceo@bank.test\r\n\r\nbody\r\n",
+        "From: a@evil.test\r\nTo: v@x.test\r\nSubject: hi\r\nFrom\t: ceo@bank.test\r\n\r\nbody\r\n",
+        "From: a@evil.test\r\nTo: v@x.test\r\nSubject: hi\r\nFr\0om: ceo@bank.test\r\n\r\nbody\r\n",
+        "From: a@evil.test\r\nTo: v@x.test\r\nSubject: hi\r\nFrom: Bank: ceo@bank.test;\r\n\r\nbody\r\n",
+        "From: a@evil.test\r\nTo: v@x.test\r\nSubject: hi\r\nFrom: <@evil.test:ceo@bank.test>\r\n\r\nbody\r\n",
+        "From: ceo@bank.test\r\nX\r\nFrom: a@evil.test\r\nTo: v@x.test\r\nSubject: hi\r\n\r\nbody\r\n",
+        "From: ceo@bank.test, a@evil.test\r\nTo: v@x.test\r\nSubject: hi\r\n\r\nbody\r\n",
+        "From: a@evil.test\r\nTo: v@x.test\r\nSubject: hi\r\n\r\nbody\r\n",
+    ];
+    for message in corpus {
+        let raw = attacker.sign("evil.test", message);
+        let (shown, verdict) = shown_and_checked(&raw, &cache).await;
+        if verdict.summary == Outcome::Pass {
+            assert_eq!(shown, [Some("a@evil.test".to_owned())], "for {message:?}");
+            assert_eq!(
+                verdict.from_domain.as_deref(),
+                Some("evil.test"),
+                "for {message:?}"
+            );
+        }
+        assert!(
+            !shown.contains(&Some("ceo@bank.test".into())) || verdict.summary != Outcome::Pass,
+            "{message:?} showed the bank with a pass"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_display_name_is_not_what_passes() {
+    // The name says the bank; the address, the one DMARC checks, does not.
+    let cache = TxtCache::new(64);
+    let attacker = attacker_and_bank(&cache);
+    let raw = attacker.sign("evil.test", &message("\"ceo@bank.test\" <a@evil.test>"));
+    let verdict = authenticate(raw.as_bytes(), &AuthOptions::default(), &no_dns(), &cache)
+        .await
+        .unwrap();
+    assert_eq!(verdict.summary, Outcome::Pass);
+    assert_eq!(verdict.from_domain.as_deref(), Some("evil.test"));
+    assert_eq!(verdict.dmarc_domain.as_deref(), Some("evil.test"));
+}
+
+#[tokio::test]
+async fn a_from_header_added_after_signing_is_never_a_pass() {
+    // The bank signed one From; a second one, same domain, was prepended
+    // and DMARC alone still passes on it.
+    let cache = TxtCache::new(64);
+    let bank = Domain::new();
+    bank.publish(&cache, "bank.test", "v=DMARC1; p=reject");
+    let signed = bank.sign(
+        "bank.test",
+        "From: newsletter@bank.test\r\nTo: v@x.test\r\nSubject: news\r\n\r\nbody\r\n",
+    );
+    let replay = format!(
+        "From: \"Bank Security\" <security@bank.test>\r\nSubject: Urgent: reset your password\r\n{signed}"
+    );
+    let verdict = authenticate(
+        replay.as_bytes(),
+        &AuthOptions::default(),
+        &no_dns(),
+        &cache,
+    )
+    .await
+    .unwrap();
+    assert_ne!(verdict.summary, Outcome::Pass, "{verdict:?}");
+    assert_eq!(verdict.summary, Outcome::Fail);
+    assert_eq!(verdict.from_domain, None);
+}
+
+#[tokio::test]
+async fn a_duplicated_subject_is_never_a_pass_either() {
+    let cache = TxtCache::new(64);
+    let bank = Domain::new();
+    bank.publish(&cache, "bank.test", "v=DMARC1; p=reject");
+    let signed = bank.sign("bank.test", &message("newsletter@bank.test"));
+    let replay = format!("Subject: Urgent: reset your password\r\n{signed}");
+    let verdict = authenticate(
+        replay.as_bytes(),
+        &AuthOptions::default(),
+        &no_dns(),
+        &cache,
+    )
+    .await
+    .unwrap();
+    assert_eq!(verdict.dmarc, Outcome::Pass, "DMARC alone does not see it");
+    assert_eq!(verdict.summary, Outcome::Fail);
+}
+
+#[tokio::test]
+async fn the_from_domain_a_pass_covers_is_reported() {
+    let cache = TxtCache::new(64);
+    let bank = Domain::new();
+    bank.publish(&cache, "bank.test", "v=DMARC1; p=reject");
+    let raw = bank.sign("bank.test", &message("CEO <Ceo@Bank.TEST>"));
+    let verdict = authenticate(raw.as_bytes(), &AuthOptions::default(), &no_dns(), &cache)
+        .await
+        .unwrap();
+    assert_eq!(verdict.summary, Outcome::Pass);
+    assert_eq!(verdict.from_domain.as_deref(), Some("bank.test"));
 }

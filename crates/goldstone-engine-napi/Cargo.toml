@@ -14,6 +14,8 @@ napi-derive = { version = "3", features = ["type-def"] }
 goldstone-engine = { path = "../goldstone-engine" }
 # The resolver the authenticity checks run on.
 mail-auth = { version = "0.13", default-features = false, features = ["ring", "arc"] }
+# block_in_place: the parse is CPU work, kept off the async workers.
+tokio = { version = "1", features = ["rt-multi-thread"] }
 
 [build-dependencies]
 napi-build = "2"

@@ -75,8 +75,14 @@ export interface JsVerdict {
 	dmarc: string;
 	dmarcPolicy: string;
 	dmarcDomain?: string;
+	fromDomain?: string;
 	arc: string;
 	summary: string;
+}
+
+export interface JsReadMessage {
+	message: JsMessage;
+	authenticity: JsVerdict;
 }
 
 /**
@@ -99,3 +105,14 @@ export declare function authenticateMessage(
 	raw: Buffer,
 	options?: JsAuthOptions | undefined | null,
 ): Promise<JsVerdict>;
+
+/**
+ * Parse one received message and check who sent it, from the same parse:
+ * the From the verdict speaks for is the From the message shows.
+ */
+
+export declare function readMessage(
+	raw: Buffer,
+	limits?: JsLimits | undefined | null,
+	options?: JsAuthOptions | undefined | null,
+): Promise<JsReadMessage>;

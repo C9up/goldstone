@@ -2,7 +2,7 @@
 //! in, the parsed message out.
 
 use goldstone_engine::auth::{AuthOptions, Envelope, TxtCache, Verdict};
-use goldstone_engine::{Limits, Mailbox, ParseError};
+use goldstone_engine::{Limits, Mailbox, Message, ParseError};
 use mail_auth::MessageAuthenticator;
 use napi::bindgen_prelude::Buffer;
 use napi::{Error, Result, Status};
@@ -97,12 +97,8 @@ fn engine_error(error: ParseError) -> Error {
     Error::new(Status::InvalidArg, format!("{}: {}", error.code(), error))
 }
 
-/// Parse one received message. Throws `E_GOLDSTONE_*: …` on a message that
-/// breaks a limit or is not a message at all.
-#[napi]
-pub fn parse_message(raw: Buffer, limits: Option<JsLimits>) -> Result<JsMessage> {
-    let message = goldstone_engine::parse(&raw, &limits_of(limits)).map_err(engine_error)?;
-    Ok(JsMessage {
+fn js_message(message: Message) -> JsMessage {
+    JsMessage {
         message_id: message.message_id,
         subject: message.subject,
         date: message.date,
@@ -133,7 +129,15 @@ pub fn parse_message(raw: Buffer, limits: Option<JsLimits>) -> Result<JsMessage>
                 inline: a.inline,
             })
             .collect(),
-    })
+    }
+}
+
+/// Parse one received message. Throws `E_GOLDSTONE_*: …` on a message that
+/// breaks a limit or is not a message at all.
+#[napi]
+pub fn parse_message(raw: Buffer, limits: Option<JsLimits>) -> Result<JsMessage> {
+    let message = goldstone_engine::parse(&raw, &limits_of(limits)).map_err(engine_error)?;
+    Ok(js_message(message))
 }
 
 /// The envelope SPF checks, and the bounds on the whole check.
@@ -162,6 +166,7 @@ pub struct JsVerdict {
     pub dmarc: String,
     pub dmarc_policy: String,
     pub dmarc_domain: Option<String>,
+    pub from_domain: Option<String>,
     pub arc: String,
     pub summary: String,
 }
@@ -240,6 +245,7 @@ fn verdict(v: Verdict) -> JsVerdict {
         dmarc: v.dmarc.as_str().into(),
         dmarc_policy: v.dmarc_policy.into(),
         dmarc_domain: v.dmarc_domain,
+        from_domain: v.from_domain,
         arc: v.arc.as_str().into(),
         summary: v.summary.as_str().into(),
     }
@@ -259,4 +265,38 @@ pub async fn authenticate_message(
         .await
         .map_err(engine_error)?;
     Ok(verdict(result))
+}
+
+#[napi(object)]
+pub struct JsReadMessage {
+    pub message: JsMessage,
+    pub authenticity: JsVerdict,
+}
+
+/// Parse one received message and check who sent it, from the same parse:
+/// the From the verdict speaks for is the From the message shows.
+#[napi]
+pub async fn read_message(
+    raw: Buffer,
+    limits: Option<JsLimits>,
+    options: Option<JsAuthOptions>,
+) -> Result<JsReadMessage> {
+    let limits = limits_of(limits);
+    let options = auth_options(options)?;
+    let authenticator = authenticator()?;
+    // Sanitizing is CPU work on hostile bytes: off the runtime's async
+    // workers too, not only off the JavaScript thread.
+    let (parsed, message) = tokio::task::block_in_place(|| {
+        let parsed = goldstone_engine::parse_mail(&raw, &limits)?;
+        let message = goldstone_engine::message_of(&parsed, &limits)?;
+        Ok((parsed, message))
+    })
+    .map_err(engine_error)?;
+    let authenticity =
+        goldstone_engine::auth::authenticate_parsed(&parsed, &options, authenticator, cache())
+            .await;
+    Ok(JsReadMessage {
+        message: js_message(message),
+        authenticity: verdict(authenticity),
+    })
 }

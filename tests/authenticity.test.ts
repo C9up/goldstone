@@ -84,3 +84,37 @@ describe("readMessage", () => {
 		expect(parseMessage(forged).authenticity).toBeUndefined();
 	});
 });
+
+describe("readMessage — the verdict speaks for the From the message shows", () => {
+	const twoFroms = bytes(
+		'From: "Bank Security" <security@bank.test>\r\nSubject: Urgent: reset your password\r\nFrom: newsletter@bank.test\r\nTo: v@x.test\r\nSubject: news\r\n\r\nbody\r\n',
+	);
+
+	it("names the From domain the verdict is about", async () => {
+		const message = await readMessage(unsigned);
+		expect(message.authenticity?.fromDomain).toBe("example.test");
+	}, 30_000);
+
+	it("fails a message with two From headers, and shows one From everywhere", async () => {
+		const message = await readMessage(twoFroms);
+		expect(message.authenticity?.summary).toBe("fail");
+		expect(message.authenticity?.fromDomain).toBeUndefined();
+		expect(message.from[0]?.address).toBe("security@bank.test");
+		expect(message.header("from")).toContain(message.from[0]?.address);
+		expect(message.subject).toBe(message.header("subject"));
+	}, 30_000);
+
+	it("gives the same verdict when authenticate() is called on its own", async () => {
+		expect((await authenticate(twoFroms)).summary).toBe("fail");
+	}, 30_000);
+
+	it("never lets a colon-less line hide a second From", async () => {
+		const message = await readMessage(
+			bytes(
+				"From: a@evil.test\r\nTo: v@x.test\r\nSubject: hi\r\nX\r\nFrom: ceo@bank.test\r\n\r\nbody\r\n",
+			),
+		);
+		expect(message.authenticity?.summary).toBe("fail");
+		expect(message.from[0]?.address).toBe("a@evil.test");
+	}, 30_000);
+});

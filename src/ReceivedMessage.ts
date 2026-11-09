@@ -15,7 +15,8 @@
 import {
 	type AuthenticateOptions,
 	type Authenticity,
-	authenticate,
+	fromNative,
+	nativeOptions,
 } from "./authenticity.js";
 import { fromEngine, GoldstoneError } from "./errors.js";
 import type { JsLimits, JsMessage } from "./native/generated.js";
@@ -112,7 +113,10 @@ export class ReceivedMessage {
 		}));
 	}
 
-	/** The first header of that name, any case. */
+	/**
+	 * The first header of that name, any case: the copy the message's
+	 * fields (`from`, `subject`…) read too. Every copy is in `headers`.
+	 */
 	header(name: string): string | undefined {
 		const wanted = name.toLowerCase();
 		return this.headers.find((h) => h.name.toLowerCase() === wanted)?.value;
@@ -190,18 +194,29 @@ export interface ReadOptions {
 }
 
 /**
- * Parse a received message AND check who sent it: {@link parseMessage},
- * then {@link authenticate}, the verdict on `message.authenticity`.
+ * Parse a received message AND check who sent it, the verdict on
+ * `message.authenticity`. Both come from one parse: the From the verdict
+ * speaks for is the From the message shows.
  */
 export async function readMessage(
 	raw: Uint8Array,
 	options: ReadOptions = {},
 ): Promise<ReceivedMessage> {
-	const parsed = parseNative(raw, options.limits);
-	if (options.authenticate === false) return new ReceivedMessage(parsed);
-	const authOptions =
+	if (options.authenticate === false) {
+		return new ReceivedMessage(parseNative(raw, options.limits));
+	}
+	const bounds = nativeLimits(options.limits);
+	const authOptions = nativeOptions(
 		options.authenticate === true || options.authenticate === undefined
 			? { maxBytes: options.limits?.maxBytes }
-			: { maxBytes: options.limits?.maxBytes, ...options.authenticate };
-	return new ReceivedMessage(parsed, await authenticate(raw, authOptions));
+			: { maxBytes: options.limits?.maxBytes, ...options.authenticate },
+	);
+	const bytes = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+	try {
+		const read = await engine().readMessage(bytes, bounds, authOptions);
+		return new ReceivedMessage(read.message, fromNative(read.authenticity));
+	} catch (error) {
+		if (error instanceof GoldstoneError) throw error;
+		throw fromEngine(error);
+	}
 }

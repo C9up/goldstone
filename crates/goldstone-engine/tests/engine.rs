@@ -221,3 +221,37 @@ fn malformed_input_is_answered_never_crashed_on() {
         ParseError::NotAMessage
     );
 }
+
+#[test]
+fn a_repeated_header_reads_the_same_everywhere() {
+    // The fields and the header list must not disagree on which copy of a
+    // repeated header is the message's: both read the first, the one a mail
+    // client displays.
+    let raw = "From: \"Bank Security\" <security@bank.test>\r\nSubject: Urgent: reset your password\r\nFrom: newsletter@bank.test\r\nTo: v@x.test\r\nSubject: news\r\n\r\nbody\r\n";
+    let m = parse(raw.as_bytes(), &Limits::default()).unwrap();
+    assert_eq!(m.from[0].address.as_deref(), Some("security@bank.test"));
+    assert_eq!(m.subject.as_deref(), Some("Urgent: reset your password"));
+    let first = |name: &str| {
+        m.headers
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    };
+    assert_eq!(
+        first("from"),
+        Some("\"Bank Security\" <security@bank.test>")
+    );
+    assert_eq!(first("subject"), Some("Urgent: reset your password"));
+    assert_eq!(
+        m.headers.iter().filter(|(n, _)| n == "From").count(),
+        2,
+        "every copy stays in the list"
+    );
+}
+
+#[test]
+fn a_header_that_is_not_utf8_stays_in_the_list() {
+    let raw = b"From: a@x.test\r\nX-Bin: \xff\xfe\r\nFrom: b@x.test\r\n\r\nbody\r\n";
+    let m = parse(raw, &Limits::default()).unwrap();
+    assert_eq!(m.headers.len(), 3);
+}

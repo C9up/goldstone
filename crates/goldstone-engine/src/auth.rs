@@ -11,6 +11,7 @@
 //! limit, and a cache so the same key is not fetched for every message.
 
 use mail_auth::common::parse::TxtRecordParser;
+use mail_auth::common::to_a_label;
 use mail_auth::dmarc::verify::DmarcParameters;
 use mail_auth::dmarc::Policy;
 use mail_auth::spf::verify::SpfParameters;
@@ -18,6 +19,7 @@ use mail_auth::{
     AuthenticatedMessage, DkimResult, DmarcResult, MessageAuthenticator, Parameters, ResolverCache,
     SpfOutput, SpfResult, Txt,
 };
+use mail_parser::HeaderName;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -109,9 +111,15 @@ pub struct Verdict {
     pub dmarc_policy: &'static str,
     /// The From domain DMARC was evaluated for.
     pub dmarc_domain: Option<String>,
+    /// The domain of the message's one From address — what `summary`
+    /// speaks for. `None` when the From is missing or ambiguous. The display
+    /// name is never authenticated.
+    pub from_domain: Option<String>,
     pub arc: Outcome,
-    /// `pass` (DMARC passed), `fail` (DMARC failed), `temperror` (a check
-    /// could not complete) or `none` (nothing to decide on).
+    /// `pass` (DMARC passed for `from_domain`), `fail` (DMARC failed, or
+    /// the From is missing, repeated or not the one DMARC checked, or a
+    /// header allowed once is repeated), `temperror` (a check could not
+    /// complete) or `none` (nothing to decide on).
     pub summary: Outcome,
 }
 
@@ -123,6 +131,7 @@ impl Verdict {
             dmarc: Outcome::TempError,
             dmarc_policy: "unspecified",
             dmarc_domain: None,
+            from_domain: None,
             arc: Outcome::TempError,
             summary: Outcome::TempError,
         }
@@ -210,24 +219,119 @@ pub fn not_found_record() -> Txt {
     )))
 }
 
+/// Check a raw message. It is parsed with [`crate::parse_mail`], the parse
+/// the application reads, under the default limits and `max_bytes`.
 pub async fn authenticate(
     raw: &[u8],
     options: &AuthOptions,
     authenticator: &MessageAuthenticator,
     cache: &TxtCache,
 ) -> Result<Verdict, ParseError> {
-    if raw.len() > options.max_bytes {
-        return Err(ParseError::TooLarge {
-            size: raw.len(),
-            max: options.max_bytes,
-        });
-    }
-    let mut message = AuthenticatedMessage::parse(raw).ok_or(ParseError::NotAMessage)?;
+    let limits = crate::Limits {
+        max_bytes: options.max_bytes,
+        ..crate::Limits::default()
+    };
+    let parsed = crate::parse_mail(raw, &limits)?;
+    Ok(authenticate_parsed(&parsed, options, authenticator, cache).await)
+}
+
+/// Check a message already parsed by [`crate::parse_mail`].
+///
+/// The headers DKIM and DMARC read are the parsed ones, not a second scan
+/// of the bytes: a header block two parsers end in different places would
+/// otherwise let DMARC vouch for a From the application never shows.
+pub async fn authenticate_parsed(
+    parsed: &mail_parser::Message<'_>,
+    options: &AuthOptions,
+    authenticator: &MessageAuthenticator,
+    cache: &TxtCache,
+) -> Verdict {
+    let mut message = AuthenticatedMessage::from_parsed(parsed, parsed.raw_message.as_ref(), true);
     message.dkim_headers.truncate(options.max_dkim_signatures);
     let checks = run(&message, options, authenticator, cache);
-    Ok(tokio::time::timeout(options.timeout, checks)
+    let verdict = tokio::time::timeout(options.timeout, checks)
         .await
-        .unwrap_or_else(|_| Verdict::temperror()))
+        .unwrap_or_else(|_| Verdict::temperror());
+    bind(verdict, from_domain(parsed))
+}
+
+/// Headers RFC 5322 3.6 (and MIME) allow once. A second copy is how an
+/// unsigned header rides on a signed message (RFC 6376 8.15): which one a
+/// reader shows is anyone's guess.
+const SINGLE: [HeaderName<'static>; 14] = [
+    HeaderName::From,
+    HeaderName::Sender,
+    HeaderName::ReplyTo,
+    HeaderName::To,
+    HeaderName::Cc,
+    HeaderName::Bcc,
+    HeaderName::Subject,
+    HeaderName::Date,
+    HeaderName::MessageId,
+    HeaderName::InReplyTo,
+    HeaderName::References,
+    HeaderName::ContentType,
+    HeaderName::ContentTransferEncoding,
+    HeaderName::MimeVersion,
+];
+
+/// The From a verdict can speak for.
+#[derive(Debug, PartialEq, Eq)]
+pub enum FromDomain {
+    /// One From header, one address: its domain, as DMARC compares it.
+    One(String),
+    /// No From header, or one without a usable address.
+    Missing,
+    /// Several From headers or addresses, or a header of [`SINGLE`]
+    /// repeated: nothing about this message can be vouched for.
+    Ambiguous,
+}
+
+pub fn from_domain(parsed: &mail_parser::Message<'_>) -> FromDomain {
+    let headers = parsed.root_part().headers();
+    if SINGLE
+        .iter()
+        .any(|name| headers.iter().filter(|h| &h.name == name).take(2).count() > 1)
+    {
+        return FromDomain::Ambiguous;
+    }
+    let Some(from) = parsed.header_values(HeaderName::From).next() else {
+        return FromDomain::Missing;
+    };
+    let Some(address) = from.as_address() else {
+        return FromDomain::Missing;
+    };
+    let mut mailboxes = address.iter();
+    let (Some(only), None) = (mailboxes.next(), mailboxes.next()) else {
+        return FromDomain::Ambiguous;
+    };
+    match only.address().and_then(|a| a.rsplit_once('@')) {
+        Some((_, domain)) if !domain.is_empty() => {
+            FromDomain::One(to_a_label(domain).to_ascii_lowercase())
+        }
+        _ => FromDomain::Missing,
+    }
+}
+
+/// A pass stands only for the From the application is shown.
+fn bind(mut verdict: Verdict, from: FromDomain) -> Verdict {
+    match from {
+        FromDomain::One(domain) => {
+            if verdict.summary == Outcome::Pass
+                && verdict.dmarc_domain.as_deref() != Some(domain.as_str())
+            {
+                verdict.summary = Outcome::Fail;
+            }
+            verdict.from_domain = Some(domain);
+        }
+        FromDomain::Missing => {
+            if verdict.summary == Outcome::Pass {
+                verdict.summary = Outcome::Fail;
+            }
+        }
+        FromDomain::Ambiguous => verdict.summary = Outcome::Fail,
+    }
+    verdict
 }
 
 async fn run(
@@ -302,6 +406,7 @@ async fn run(
             Policy::Unspecified => "unspecified",
         },
         dmarc_domain: Some(dmarc_output.domain().to_owned()).filter(|d| !d.is_empty()),
+        from_domain: None,
         arc: dkim_outcome(arc_output.result()),
         summary,
     }

@@ -8,8 +8,15 @@
  *   }
  *
  * `summary` is `pass` only when the From domain's DMARC passes — through a
- * DKIM signature or an SPF result aligned with that domain. A check that
- * could not complete (DNS down, too slow) is `temperror`, never a pass.
+ * DKIM signature or an SPF result aligned with that domain — and that From
+ * is the one the message shows: exactly one From header holding exactly one
+ * address, whose domain is `fromDomain`. A From header repeated, a From with
+ * several addresses, or any header allowed once (Subject, Date, To…) that
+ * appears twice is a `fail`. A check that could not complete (DNS down, too
+ * slow) is `temperror`, never a pass.
+ *
+ * Only the address's domain is authenticated, never the display name:
+ * `"ceo@bank.test" <a@evil.test>` can pass, for `evil.test`.
  */
 
 import { fromEngine, GoldstoneError } from "./errors.js";
@@ -46,8 +53,18 @@ export interface Authenticity {
 	readonly dmarcPolicy: DmarcPolicy;
 	/** The From domain DMARC was evaluated for. */
 	readonly dmarcDomain?: string;
+	/**
+	 * The domain of the message's one From address: what `summary` speaks
+	 * for. Absent when the From is missing or ambiguous (repeated, several
+	 * addresses). The display name is never authenticated.
+	 */
+	readonly fromDomain?: string;
 	readonly arc: AuthResult;
-	/** `pass` only when DMARC passed; `temperror` when a check could not complete. */
+	/**
+	 * `pass` only when DMARC passed for `fromDomain`; `fail` when it failed
+	 * or the From cannot be told apart; `temperror` when a check could not
+	 * complete.
+	 */
 	readonly summary: "pass" | "fail" | "none" | "temperror";
 }
 
@@ -107,7 +124,8 @@ function summary(value: string): Authenticity["summary"] {
 	}
 }
 
-function fromNative(v: JsVerdict): Authenticity {
+/** The engine's verdict, as the application reads it. */
+export function fromNative(v: JsVerdict): Authenticity {
 	return {
 		dkim: v.dkim.map((d) => ({
 			result: result(d.result),
@@ -119,6 +137,7 @@ function fromNative(v: JsVerdict): Authenticity {
 		dmarc: result(v.dmarc),
 		dmarcPolicy: policy(v.dmarcPolicy),
 		dmarcDomain: v.dmarcDomain,
+		fromDomain: v.fromDomain,
 		arc: result(v.arc),
 		summary: summary(v.summary),
 	};
@@ -126,7 +145,7 @@ function fromNative(v: JsVerdict): Authenticity {
 
 const BOUNDED = ["maxDkimSignatures", "timeoutMs", "maxBytes"] as const;
 
-function nativeOptions(
+export function nativeOptions(
 	options: AuthenticateOptions | undefined,
 ): JsAuthOptions | undefined {
 	if (options === undefined) return undefined;

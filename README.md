@@ -152,6 +152,18 @@ await authenticate(raw, { ip: "203.0.113.7", helo: "mx.sender.test", mailFrom: "
 - `summary` is `pass` only when the From domain's DMARC passes, through a
   DKIM signature or an SPF result aligned with that domain. A message signed
   by another domain than its From does not pass.
+- The verdict and the message come from one parse, and a pass speaks for the
+  From the message shows: exactly one From header, holding exactly one
+  address, whose domain is `authenticity.fromDomain`. A repeated From, a From
+  with several addresses, or a header allowed once (Subject, Date, To,
+  Message-ID…) that appears twice is a `fail`: an unsigned copy added to a
+  signed message is how a phisher rides on someone else's signature.
+- Only the address's domain is checked, never the display name:
+  `"ceo@bank.test" <a@evil.test>` can pass — for `evil.test`. Show
+  `fromDomain`, or the address, next to the verdict.
+- A repeated header is read from its first copy everywhere: `message.from`,
+  `message.subject` and `message.header("from")` agree, and every copy stays
+  in `message.headers`.
 - A check that cannot complete — DNS down, too slow — is `temperror`,
   never a pass. The whole check has a deadline (10 s by default), at most 5
   DKIM signatures are verified (each is a lookup), and DNS answers are cached.

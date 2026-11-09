@@ -511,6 +511,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "tokio",
 ]
 
 [[package]]
