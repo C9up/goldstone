@@ -11,6 +11,9 @@ description = "Parses received mail as hostile input, for Goldstone"
 mail-parser = "0.11"
 # HTML sanitizing for display — the library blackhole-engine already uses.
 ammonia = "4"
+# The parser under ammonia, run once on its own to measure the tree before
+# ammonia builds it (see html.rs).
+html5ever = "0.40"
 # DKIM, SPF, DMARC and ARC. On ring rather than the default aws-lc-rs, a C
 # library that is heavy to cross-compile for five platforms.
 mail-auth = { version = "0.13", default-features = false, features = ["ring", "arc"] }

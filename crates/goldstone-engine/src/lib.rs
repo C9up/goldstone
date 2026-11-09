@@ -12,6 +12,7 @@
 //! here.
 
 pub mod auth;
+pub mod html;
 
 use mail_parser::{Address, HeaderName, HeaderValue, MessageParser, MimeHeaders, PartType};
 use std::fmt;
@@ -29,6 +30,9 @@ pub struct Limits {
     pub max_attachments: usize,
     /// Size of one decoded attachment.
     pub max_attachment_bytes: usize,
+    /// Size of the HTML body handed to the sanitizer. Over it, the message
+    /// is still read, without `html`.
+    pub max_html_bytes: usize,
 }
 
 impl Default for Limits {
@@ -39,6 +43,7 @@ impl Default for Limits {
             max_depth: 32,
             max_attachments: 100,
             max_attachment_bytes: 25 * 1024 * 1024,
+            max_html_bytes: 512 * 1024,
         }
     }
 }
@@ -51,6 +56,9 @@ pub enum ParseError {
     TooDeep { depth: usize, max: usize },
     TooManyAttachments { count: usize, max: usize },
     AttachmentTooLarge { size: usize, max: usize },
+    HtmlTooLarge { size: usize, max: usize },
+    HtmlTooDeep { max: usize },
+    HtmlTooComplex { max: usize },
 }
 
 impl ParseError {
@@ -63,6 +71,9 @@ impl ParseError {
             Self::TooDeep { .. } => "E_GOLDSTONE_TOO_DEEP",
             Self::TooManyAttachments { .. } => "E_GOLDSTONE_TOO_MANY_ATTACHMENTS",
             Self::AttachmentTooLarge { .. } => "E_GOLDSTONE_ATTACHMENT_TOO_LARGE",
+            Self::HtmlTooLarge { .. } => "E_GOLDSTONE_HTML_TOO_LARGE",
+            Self::HtmlTooDeep { .. } => "E_GOLDSTONE_HTML_TOO_DEEP",
+            Self::HtmlTooComplex { .. } => "E_GOLDSTONE_HTML_TOO_COMPLEX",
         }
     }
 }
@@ -89,6 +100,16 @@ impl fmt::Display for ParseError {
             Self::AttachmentTooLarge { size, max } => {
                 write!(f, "an attachment is {size} bytes, over the {max} allowed")
             }
+            Self::HtmlTooLarge { size, max } => {
+                write!(f, "the HTML body is {size} bytes, over the {max} sanitized")
+            }
+            Self::HtmlTooDeep { max } => {
+                write!(f, "the HTML body nests deeper than {max} elements")
+            }
+            Self::HtmlTooComplex { max } => write!(
+                f,
+                "the HTML body builds more than {max} nodes, out of proportion to its markup"
+            ),
         }
     }
 }
@@ -132,6 +153,9 @@ pub struct Message {
     /// Sanitized for display: no script, no event handler, no
     /// `javascript:` URL.
     pub html: Option<String>,
+    /// Why there is no `html` although the message has an HTML body: it
+    /// broke a bound of [`html::check`], and was not sanitized.
+    pub html_error: Option<ParseError>,
     /// The HTML as received. Never render it.
     pub unsanitized_html: Option<String>,
     pub attachments: Vec<Attachment>,
@@ -228,7 +252,13 @@ pub fn message_of(
                 PartType::Html(html) => Some(html.to_string()),
                 _ => None,
             });
-    let html = unsanitized_html.as_deref().map(ammonia::clean);
+    let (html, html_error) = match unsanitized_html.as_deref() {
+        None => (None, None),
+        Some(raw) => match html::check(raw, limits.max_html_bytes) {
+            Ok(()) => (Some(ammonia::clean(raw)), None),
+            Err(refused) => (None, Some(refused)),
+        },
+    };
 
     let first = |name: HeaderName<'static>| message.header_values(name).next();
     let addresses = |name: HeaderName<'static>| mailboxes(first(name).and_then(|v| v.as_address()));
@@ -269,6 +299,7 @@ pub fn message_of(
             .collect(),
         text: message.body_text(0).map(|t| t.into_owned()),
         html,
+        html_error,
         unsanitized_html,
         attachments,
     })

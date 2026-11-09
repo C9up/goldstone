@@ -20,9 +20,11 @@ function multipart(boundary: string, parts: string[]): string {
 const attachment = (name: string, base64: string) =>
 	`Content-Type: application/pdf\r\nContent-Disposition: attachment; filename="${name}"\r\nContent-Transfer-Encoding: base64\r\n\r\n${base64}`;
 
-function codeOf(run: () => unknown): string | undefined {
+async function codeOf(
+	run: () => Promise<unknown>,
+): Promise<string | undefined> {
 	try {
-		run();
+		await run();
 	} catch (error) {
 		return error instanceof GoldstoneError
 			? error.code
@@ -36,8 +38,8 @@ describe("parseMessage", () => {
 		expect(isNativeAvailable()).toBe(true);
 	});
 
-	it("gives back the message: addresses, date, text, attachments", () => {
-		const m = parseMessage(
+	it("gives back the message: addresses, date, text, attachments", async () => {
+		const m = await parseMessage(
 			bytes(
 				HEAD +
 					multipart("B", [
@@ -61,13 +63,13 @@ describe("parseMessage", () => {
 		expect(new TextDecoder().decode(pdf?.content)).toBe("%PDF-");
 	});
 
-	it("reads bytes that do not start at the beginning of their buffer", () => {
+	it("reads bytes that do not start at the beginning of their buffer", async () => {
 		const raw = bytes(`garbage${HEAD}Content-Type: text/plain\r\n\r\nbody\r\n`);
-		expect(parseMessage(raw.subarray(7)).subject).toBe("Facture n° 42");
+		expect((await parseMessage(raw.subarray(7))).subject).toBe("Facture n° 42");
 	});
 
-	it("sanitizes the HTML, and hands the original only to the method that says so", () => {
-		const m = parseMessage(
+	it("sanitizes the HTML, and hands the original only to the method that says so", async () => {
+		const m = await parseMessage(
 			bytes(
 				`${HEAD}Content-Type: text/html\r\n\r\n<p onclick="alert(1)">hi</p><script>alert(2)</script><a href="javascript:alert(3)">x</a>\r\n`,
 			),
@@ -80,8 +82,8 @@ describe("parseMessage", () => {
 		expect(JSON.stringify(m)).not.toContain("<script>");
 	});
 
-	it("names attachments so they cannot leave the directory they are saved to", () => {
-		const m = parseMessage(
+	it("names attachments so they cannot leave the directory they are saved to", async () => {
+		const m = await parseMessage(
 			bytes(
 				HEAD +
 					multipart("N", [
@@ -101,18 +103,18 @@ describe("parseMessage", () => {
 });
 
 describe("parseMessage — limits", () => {
-	it("refuses an oversized message before parsing it", () => {
+	it("refuses an oversized message before parsing it", async () => {
 		expect(
-			codeOf(() => parseMessage(new Uint8Array(101), { maxBytes: 100 })),
+			await codeOf(() => parseMessage(new Uint8Array(101), { maxBytes: 100 })),
 		).toBe("E_GOLDSTONE_MESSAGE_TOO_LARGE");
 	});
 
-	it("refuses deep nesting, too many parts, attachments too many or too large", () => {
+	it("refuses deep nesting, too many parts, attachments too many or too large", async () => {
 		let deep = "leaf\r\n";
 		for (let i = 0; i < 40; i++) {
 			deep = `Content-Type: multipart/mixed; boundary=b${i}\r\n\r\n--b${i}\r\n${deep}\r\n--b${i}--\r\n`;
 		}
-		expect(codeOf(() => parseMessage(bytes(HEAD + deep)))).toBe(
+		expect(await codeOf(() => parseMessage(bytes(HEAD + deep)))).toBe(
 			"E_GOLDSTONE_TOO_DEEP",
 		);
 
@@ -121,7 +123,7 @@ describe("parseMessage — limits", () => {
 			() => "Content-Type: text/plain\r\n\r\nx",
 		);
 		expect(
-			codeOf(() =>
+			await codeOf(() =>
 				parseMessage(bytes(HEAD + multipart("P", parts)), { maxParts: 10 }),
 			),
 		).toBe("E_GOLDSTONE_TOO_MANY_PARTS");
@@ -130,14 +132,14 @@ describe("parseMessage — limits", () => {
 			attachment(`f${i}.pdf`, "eA=="),
 		);
 		expect(
-			codeOf(() =>
+			await codeOf(() =>
 				parseMessage(bytes(HEAD + multipart("A", files)), {
 					maxAttachments: 2,
 				}),
 			),
 		).toBe("E_GOLDSTONE_TOO_MANY_ATTACHMENTS");
 		expect(
-			codeOf(() =>
+			await codeOf(() =>
 				parseMessage(
 					bytes(HEAD + multipart("A", [attachment("b.pdf", "AAAAAAAA")])),
 					{
@@ -150,15 +152,15 @@ describe("parseMessage — limits", () => {
 
 	it.each([0, -1, 1.5, 2 ** 32, Number.NaN])(
 		"refuses %s as a limit",
-		(value) => {
-			expect(codeOf(() => parseMessage(bytes(HEAD), { maxParts: value }))).toBe(
-				"E_GOLDSTONE_INVALID_LIMITS",
-			);
+		async (value) => {
+			expect(
+				await codeOf(() => parseMessage(bytes(HEAD), { maxParts: value })),
+			).toBe("E_GOLDSTONE_INVALID_LIMITS");
 		},
 	);
 
-	it("refuses what is not a message, and survives random bytes", () => {
-		expect(codeOf(() => parseMessage(new Uint8Array()))).toBe(
+	it("refuses what is not a message, and survives random bytes", async () => {
+		expect(await codeOf(() => parseMessage(new Uint8Array()))).toBe(
 			"E_GOLDSTONE_NOT_A_MESSAGE",
 		);
 		const random = new Uint8Array(1024 * 1024);
@@ -167,13 +169,12 @@ describe("parseMessage — limits", () => {
 			state = (state * 1103515245 + 12345) >>> 0;
 			random[i] = state >>> 24;
 		}
-		expect(() => {
-			try {
-				parseMessage(random);
-			} catch (error) {
-				if (!(error instanceof GoldstoneError)) throw error;
-			}
-		}).not.toThrow();
+		const outcome = await parseMessage(random).then(
+			() => "parsed",
+			(error: unknown) =>
+				error instanceof GoldstoneError ? "refused" : "crashed",
+		);
+		expect(outcome).not.toBe("crashed");
 	});
 });
 
@@ -187,5 +188,67 @@ describe("fromEngine", () => {
 		).toBe("nests 40");
 		expect(fromEngine(new Error("boom")).code).toBe("E_GOLDSTONE_ENGINE");
 		expect(fromEngine("not an error").code).toBe("E_GOLDSTONE_ENGINE");
+	});
+});
+
+describe("parseMessage — hostile HTML", () => {
+	const html = (body: string) =>
+		bytes(`${HEAD}Content-Type: text/html\r\n\r\n${body}\r\n`);
+
+	it("parses off the event loop: timers keep firing during a parse", async () => {
+		// Heavy but within every bound: half a megabyte of dense markup,
+		// a formatting element re-opened in each paragraph, and 20 MB of text.
+		let markup = '<div><b id="1"></div>';
+		while (markup.length < 500 * 1024) markup += "<p>x";
+		const raw = bytes(
+			HEAD +
+				multipart("H", [
+					`Content-Type: text/html\r\n\r\n${markup}`,
+					`Content-Type: text/plain\r\n\r\n${"lorem ipsum ".repeat(1_700_000)}`,
+				]),
+		);
+		let ticks = 0;
+		const timer = setInterval(() => {
+			ticks += 1;
+		}, 1);
+		try {
+			const pending = parseMessage(raw);
+			expect(pending).toBeInstanceOf(Promise);
+			const m = await pending;
+			expect(m.html).toBeDefined();
+		} finally {
+			clearInterval(timer);
+		}
+		expect(ticks).toBeGreaterThan(0);
+	}, 30_000);
+
+	it("does not sanitize HTML nested 100 000 deep, and says why", async () => {
+		const started = performance.now();
+		const m = await parseMessage(html("<div>".repeat(100_000)));
+		expect(performance.now() - started).toBeLessThan(2_000);
+		expect(m.html).toBeUndefined();
+		expect(m.htmlError?.code).toBe("E_GOLDSTONE_HTML_TOO_DEEP");
+		expect(m.unsanitizedHtml()).toContain("<div>");
+	});
+
+	it("does not sanitize HTML whose tree outgrows its markup", async () => {
+		let markup = "";
+		for (let i = 0; i < 2_000; i++) markup += `<div><b id=${i}></div>`;
+		markup += "<p>x".repeat(2_000);
+		const started = performance.now();
+		const m = await parseMessage(html(markup));
+		expect(performance.now() - started).toBeLessThan(2_000);
+		expect(m.html).toBeUndefined();
+		expect(m.htmlError?.code).toBe("E_GOLDSTONE_HTML_TOO_COMPLEX");
+	});
+
+	it("does not sanitize HTML over maxHtmlBytes, and reads the rest", async () => {
+		const m = await parseMessage(html("<p>hello</p>".repeat(100)), {
+			maxHtmlBytes: 100,
+		});
+		expect(m.subject).toBe("Facture n° 42");
+		expect(m.html).toBeUndefined();
+		expect(m.htmlError?.code).toBe("E_GOLDSTONE_HTML_TOO_LARGE");
+		expect(m.text).toContain("hello");
 	});
 });

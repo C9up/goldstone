@@ -81,7 +81,7 @@ describe("readMessage", () => {
 		expect(
 			(await readMessage(forged, { authenticate: false })).authenticity,
 		).toBeUndefined();
-		expect(parseMessage(forged).authenticity).toBeUndefined();
+		expect((await parseMessage(forged)).authenticity).toBeUndefined();
 	});
 });
 

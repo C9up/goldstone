@@ -1,15 +1,16 @@
 /**
  * A received mail, parsed as the hostile input it is.
  *
- *   const message = parseMessage(raw)
+ *   const message = await parseMessage(raw)
  *   message.subject
  *   message.html            // sanitized: safe to render
  *   message.attachments[0].fileName   // safe to save under
  *
- * The parsing happens in Rust, in one call: the raw bytes go in, this comes
- * out. The size is checked before a byte is parsed, the structure is bounded
- * after, and what the sender controls — the HTML, the attachment names — is
- * made safe before it reaches the application.
+ * The parsing happens in Rust, in one call and off the JavaScript thread:
+ * the raw bytes go in, this comes out. The size is checked before a byte is
+ * parsed, the structure is bounded after, and what the sender controls — the
+ * HTML, the attachment names — is made safe before it reaches the
+ * application.
  */
 
 import {
@@ -34,6 +35,11 @@ export interface Limits {
 	maxAttachments?: number;
 	/** Size of one decoded attachment. Default 25 MiB. */
 	maxAttachmentBytes?: number;
+	/**
+	 * Size of the HTML body that is sanitized. Over it, the message is still
+	 * read, without `html` (see `htmlError`). Default 512 KiB.
+	 */
+	maxHtmlBytes?: number;
 }
 
 export interface Mailbox {
@@ -77,6 +83,14 @@ export class ReceivedMessage {
 	readonly text?: string;
 	/** Sanitized for display: no script, no event handler, no `javascript:` URL. */
 	readonly html?: string;
+	/**
+	 * Why `html` is absent although the message has an HTML body: over
+	 * `maxHtmlBytes` (`E_GOLDSTONE_HTML_TOO_LARGE`), nested too deep
+	 * (`…_HTML_TOO_DEEP`), or building a tree out of proportion to its markup
+	 * (`…_HTML_TOO_COMPLEX`). Sanitizing such HTML would cost time that grows
+	 * faster than its size; the text and the rest of the message are there.
+	 */
+	readonly htmlError?: GoldstoneError;
 	readonly attachments: readonly Attachment[];
 	/**
 	 * Who really sent it — present when the message was read with
@@ -101,6 +115,8 @@ export class ReceivedMessage {
 		this.headers = parsed.headers;
 		this.text = parsed.text;
 		this.html = parsed.html;
+		this.htmlError =
+			parsed.htmlError === undefined ? undefined : fromEngine(parsed.htmlError);
 		this.#unsanitizedHtml = parsed.unsanitizedHtml;
 		this.attachments = parsed.attachments.map((a) => ({
 			fileName: a.fileName,
@@ -138,6 +154,7 @@ const LIMIT_KEYS = [
 	"maxDepth",
 	"maxAttachments",
 	"maxAttachmentBytes",
+	"maxHtmlBytes",
 ] as const;
 
 function nativeLimits(limits: Limits | undefined): JsLimits | undefined {
@@ -159,25 +176,28 @@ function nativeLimits(limits: Limits | undefined): JsLimits | undefined {
 
 /**
  * Parse one received message — raw RFC 5322 bytes, as IMAP fetches them or
- * a provider posts them.
+ * a provider posts them. The work runs off the event loop.
  *
- * Throws a `GoldstoneError` on a message over a limit
+ * Rejects with a `GoldstoneError` on a message over a limit
  * (`E_GOLDSTONE_MESSAGE_TOO_LARGE`, `…_TOO_MANY_PARTS`, `…_TOO_DEEP`,
  * `…_TOO_MANY_ATTACHMENTS`, `…_ATTACHMENT_TOO_LARGE`) or not a message at
  * all (`E_GOLDSTONE_NOT_A_MESSAGE`).
  */
-export function parseMessage(
+export async function parseMessage(
 	raw: Uint8Array,
 	limits?: Limits,
-): ReceivedMessage {
-	return new ReceivedMessage(parseNative(raw, limits));
+): Promise<ReceivedMessage> {
+	return new ReceivedMessage(await parseNative(raw, limits));
 }
 
-function parseNative(raw: Uint8Array, limits: Limits | undefined): JsMessage {
+async function parseNative(
+	raw: Uint8Array,
+	limits: Limits | undefined,
+): Promise<JsMessage> {
 	const bounds = nativeLimits(limits);
 	const bytes = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
 	try {
-		return engine().parseMessage(bytes, bounds);
+		return await engine().parseMessage(bytes, bounds);
 	} catch (error) {
 		if (error instanceof GoldstoneError) throw error;
 		throw fromEngine(error);
@@ -203,7 +223,7 @@ export async function readMessage(
 	options: ReadOptions = {},
 ): Promise<ReceivedMessage> {
 	if (options.authenticate === false) {
-		return new ReceivedMessage(parseNative(raw, options.limits));
+		return new ReceivedMessage(await parseNative(raw, options.limits));
 	}
 	const bounds = nativeLimits(options.limits);
 	const authOptions = nativeOptions(

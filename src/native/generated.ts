@@ -12,6 +12,7 @@ export interface JsLimits {
 	maxDepth?: number;
 	maxAttachments?: number;
 	maxAttachmentBytes?: number;
+	maxHtmlBytes?: number;
 }
 
 export interface JsMailbox {
@@ -47,6 +48,8 @@ export interface JsMessage {
 	headers: Array<JsHeader>;
 	text?: string;
 	html?: string;
+	/** `E_GOLDSTONE_HTML_*: …` when the HTML body was not sanitized. */
+	htmlError?: string;
 	unsanitizedHtml?: string;
 	attachments: Array<JsAttachment>;
 }
@@ -86,14 +89,15 @@ export interface JsReadMessage {
 }
 
 /**
- * Parse one received message. Throws `E_GOLDSTONE_*: …` on a message that
- * breaks a limit or is not a message at all.
+ * Parse one received message, off the JavaScript thread: parsing and
+ * sanitizing are CPU work on bytes a stranger sent. Rejects with
+ * `E_GOLDSTONE_*: …` on a message that breaks a limit or is not a message.
  */
 
 export declare function parseMessage(
 	raw: Buffer,
 	limits?: JsLimits | undefined | null,
-): JsMessage;
+): Promise<JsMessage>;
 
 /**
  * DKIM, SPF (when the envelope is given), DMARC and ARC for one received

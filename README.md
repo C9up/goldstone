@@ -100,7 +100,7 @@ stops Mailgun from retrying it.
 ```ts
 import { parseMessage } from "@c9up/goldstone"
 
-const message = parseMessage(raw) // raw RFC 5322 bytes
+const message = await parseMessage(raw) // raw RFC 5322 bytes
 
 message.subject
 message.from            // [{ name, address }]
@@ -112,8 +112,9 @@ message.header("List-Unsubscribe")
 ```
 
 Parsing runs in Rust ([mail-parser](https://github.com/stalwartlabs/mail-parser)),
-in one call: the bytes go in, the message comes out. A received mail is input
-from whoever sent it, so:
+in one call and off the JavaScript thread: the bytes go in, the message comes
+out, and the event loop keeps serving requests meanwhile. A received mail is
+input from whoever sent it, so:
 
 - **the size is checked before a byte is parsed**, then the structure is
   bounded — parts, nesting depth, number and size of attachments. Each limit
@@ -124,6 +125,13 @@ from whoever sent it, so:
 - **`html` is sanitized** — no script, no event handler, no `javascript:` URL.
   The HTML as received is only reachable through `unsanitizedHtml()`, for what
   has to see the original; never render it;
+- **the HTML is bounded before it is sanitized**: over `maxHtmlBytes`
+  (512 KiB by default), nested deeper than 1 000 elements, or building a tree
+  out of proportion to its markup, it is not sanitized at all — the HTML
+  standard's tree building costs more than linear time on such markup.
+  `html` is then absent and `htmlError` says why
+  (`E_GOLDSTONE_HTML_TOO_LARGE`, `…_HTML_TOO_DEEP`, `…_HTML_TOO_COMPLEX`);
+  the message, its text and its attachments are read as usual;
 - **`fileName` is safe to save under**: the last path segment of what the
   sender wrote, without control characters, leading dots or a Windows device
   name. What the sender wrote stays in `originalName`, for display only.

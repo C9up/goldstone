@@ -18,6 +18,7 @@ pub struct JsLimits {
     pub max_depth: Option<u32>,
     pub max_attachments: Option<u32>,
     pub max_attachment_bytes: Option<u32>,
+    pub max_html_bytes: Option<u32>,
 }
 
 #[napi(object)]
@@ -57,6 +58,8 @@ pub struct JsMessage {
     pub headers: Vec<JsHeader>,
     pub text: Option<String>,
     pub html: Option<String>,
+    /// `E_GOLDSTONE_HTML_*: …` when the HTML body was not sanitized.
+    pub html_error: Option<String>,
     pub unsanitized_html: Option<String>,
     pub attachments: Vec<JsAttachment>,
 }
@@ -78,6 +81,9 @@ fn limits_of(limits: Option<JsLimits>) -> Limits {
         }
         if let Some(v) = l.max_attachment_bytes {
             out.max_attachment_bytes = v as usize;
+        }
+        if let Some(v) = l.max_html_bytes {
+            out.max_html_bytes = v as usize;
         }
     }
     out
@@ -116,6 +122,7 @@ fn js_message(message: Message) -> JsMessage {
             .collect(),
         text: message.text,
         html: message.html,
+        html_error: message.html_error.map(|e| format!("{}: {}", e.code(), e)),
         unsanitized_html: message.unsanitized_html,
         attachments: message
             .attachments
@@ -132,11 +139,14 @@ fn js_message(message: Message) -> JsMessage {
     }
 }
 
-/// Parse one received message. Throws `E_GOLDSTONE_*: …` on a message that
-/// breaks a limit or is not a message at all.
+/// Parse one received message, off the JavaScript thread: parsing and
+/// sanitizing are CPU work on bytes a stranger sent. Rejects with
+/// `E_GOLDSTONE_*: …` on a message that breaks a limit or is not a message.
 #[napi]
-pub fn parse_message(raw: Buffer, limits: Option<JsLimits>) -> Result<JsMessage> {
-    let message = goldstone_engine::parse(&raw, &limits_of(limits)).map_err(engine_error)?;
+pub async fn parse_message(raw: Buffer, limits: Option<JsLimits>) -> Result<JsMessage> {
+    let limits = limits_of(limits);
+    let message = tokio::task::block_in_place(|| goldstone_engine::parse(&raw, &limits))
+        .map_err(engine_error)?;
     Ok(js_message(message))
 }
 

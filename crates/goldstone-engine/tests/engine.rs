@@ -255,3 +255,94 @@ fn a_header_that_is_not_utf8_stays_in_the_list() {
     let m = parse(raw, &Limits::default()).unwrap();
     assert_eq!(m.headers.len(), 3);
 }
+
+fn html_message(html: &str) -> String {
+    format!("{HEAD}Content-Type: text/html\r\n\r\n{html}\r\n")
+}
+
+/// Parses within `budget`, or the test fails: the point is that hostile
+/// HTML costs time in proportion to its size, never more.
+fn parse_within(
+    raw: &str,
+    limits: &Limits,
+    budget: std::time::Duration,
+) -> goldstone_engine::Message {
+    let started = std::time::Instant::now();
+    let message = parse(raw.as_bytes(), limits).unwrap();
+    assert!(
+        started.elapsed() < budget,
+        "took {:?}, over {budget:?}",
+        started.elapsed()
+    );
+    message
+}
+
+const BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[test]
+fn deeply_nested_html_is_not_sanitized_and_does_not_stall() {
+    // 100 000 open <div> (under the size limit): 16 s of sanitizing before
+    // it was bounded, and 200 000 took 65 s.
+    let m = parse_within(
+        &html_message(&"<div>".repeat(100_000)),
+        &Limits::default(),
+        BUDGET,
+    );
+    assert_eq!(m.html, None);
+    assert_eq!(m.html_error, Some(ParseError::HtmlTooDeep { max: 1000 }));
+    assert!(m.unsanitized_html.is_some(), "the original is kept");
+}
+
+#[test]
+fn re_opened_formatting_elements_are_not_sanitized_and_do_not_stall() {
+    // Each <b> is closed by its <div>, and the tree builder re-opens every
+    // one of them in each <p>: output and time grow with the square.
+    let mut html: String = (0..2_000)
+        .map(|i| format!("<div><b id={i}></div>"))
+        .collect();
+    html.push_str(&"<p>x".repeat(2_000));
+    let m = parse_within(&html_message(&html), &Limits::default(), BUDGET);
+    assert_eq!(m.html, None);
+    assert!(matches!(
+        m.html_error,
+        Some(ParseError::HtmlTooComplex { .. })
+    ));
+
+    let mut open: String = (0..20_000).map(|i| format!("<b id={i}>")).collect();
+    open.push_str(&"<p>x".repeat(20_000));
+    let m = parse_within(&html_message(&open), &Limits::default(), BUDGET);
+    assert_eq!(m.html, None);
+    assert!(m.html_error.is_some());
+}
+
+#[test]
+fn html_over_its_limit_is_not_sanitized_but_the_message_is_read() {
+    let limits = Limits {
+        max_html_bytes: 1_000,
+        ..Limits::default()
+    };
+    let m = parse(html_message(&"<p>hi</p>".repeat(200)).as_bytes(), &limits).unwrap();
+    assert_eq!(m.subject.as_deref(), Some("Facture n° 42"));
+    assert_eq!(m.html, None);
+    assert!(matches!(
+        m.html_error,
+        Some(ParseError::HtmlTooLarge { max: 1_000, .. })
+    ));
+    assert!(m.text.is_some_and(|t| t.contains("hi")));
+}
+
+#[test]
+fn ordinary_sloppy_html_is_still_sanitized() {
+    // What real mail looks like: unclosed paragraphs and cells, formatting
+    // left open, a few dozen levels of tables.
+    let mut html = String::from("<font face=Arial><table><tr><td>");
+    for i in 0..40 {
+        html.push_str(&format!("<div><table><tr><td><b>cell {i}<i>x</b></i>"));
+    }
+    for i in 0..500 {
+        html.push_str(&format!("<p><font color=red>para {i}<li>item<td>cell"));
+    }
+    let m = parse_within(&html_message(&html), &Limits::default(), BUDGET);
+    assert_eq!(m.html_error, None);
+    assert!(m.html.is_some_and(|h| h.contains("para 499")));
+}
