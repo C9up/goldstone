@@ -8,14 +8,27 @@
 
 import { GoldstoneNativeRequiredError } from "./errors.js";
 import {
+	hasFunctions,
 	loadNativeBinary,
 	unavailableReason as vendorUnavailableReason,
 } from "./vendor/nativeBinary.js";
 
-/** The engine's surface, as the Rust declares it (`pnpm build:napi-types`). */
-type NativeGoldstone = typeof import("./native/generated.js");
+/** What this package calls, as the Rust declares it (`pnpm build:napi-types`). */
+type NativeGoldstone = Pick<
+	typeof import("./native/generated.js"),
+	"parseMessage" | "readMessage" | "authenticateMessage"
+>;
 
-const attempt = loadNativeBinary<NativeGoldstone>();
+/** The same three calls, checked at load: a stale binary loads just as well. */
+function isNativeGoldstone(value: unknown): value is NativeGoldstone {
+	return hasFunctions(value, [
+		"parseMessage",
+		"readMessage",
+		"authenticateMessage",
+	]);
+}
+
+const attempt = loadNativeBinary(isNativeGoldstone);
 const native = attempt.loaded ? attempt.binary : undefined;
 const loadError = attempt.loaded ? undefined : attempt.cause;
 
