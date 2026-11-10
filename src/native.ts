@@ -14,21 +14,23 @@ import {
 } from "./vendor/nativeBinary.js";
 
 /** What this package calls, as the Rust declares it (`pnpm build:napi-types`). */
+const NATIVE_CALLS = [
+	"parseMessage",
+	"readMessage",
+	"authenticateMessage",
+] as const;
+
 type NativeGoldstone = Pick<
 	typeof import("./native/generated.js"),
-	"parseMessage" | "readMessage" | "authenticateMessage"
+	(typeof NATIVE_CALLS)[number]
 >;
 
 /** The same three calls, checked at load: a stale binary loads just as well. */
 function isNativeGoldstone(value: unknown): value is NativeGoldstone {
-	return hasFunctions(value, [
-		"parseMessage",
-		"readMessage",
-		"authenticateMessage",
-	]);
+	return hasFunctions(value, NATIVE_CALLS);
 }
 
-const attempt = loadNativeBinary(isNativeGoldstone);
+const attempt = loadNativeBinary(isNativeGoldstone, NATIVE_CALLS);
 const native = attempt.loaded ? attempt.binary : undefined;
 const loadError = attempt.loaded ? undefined : attempt.cause;
 
