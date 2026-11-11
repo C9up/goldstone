@@ -45,7 +45,10 @@ export interface DkimVerdict {
 }
 
 export interface Authenticity {
-	/** One per signature checked (at most `maxDkimSignatures`). */
+	/**
+	 * One per signature: the ones verified (at most `maxDkimSignatures`),
+	 * and the ones refused without a lookup, which do not count against it.
+	 */
 	readonly dkim: readonly DkimVerdict[];
 	/** `none` when no envelope was given. */
 	readonly spf: AuthResult;

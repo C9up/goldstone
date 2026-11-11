@@ -248,8 +248,10 @@ pub async fn authenticate_parsed(
     cache: &TxtCache,
 ) -> Verdict {
     let mut message = AuthenticatedMessage::from_parsed(parsed, parsed.raw_message.as_ref(), true);
-    message.dkim_headers.truncate(options.max_dkim_signatures);
+    // Refused first: they cost no lookup, so they do not count against the
+    // signatures verified.
     let refused = refuse_unsafe_signatures(&mut message);
+    message.dkim_headers.truncate(options.max_dkim_signatures);
     let checks = run(&message, refused, options, authenticator, cache);
     let verdict = tokio::time::timeout(options.timeout, checks)
         .await

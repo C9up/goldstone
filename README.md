@@ -205,7 +205,8 @@ await authenticate(raw, { ip: "203.0.113.7", helo: "mx.sender.test", mailFrom: "
   not cover can be rewritten at will.
 - A check that cannot complete — DNS down, too slow — is `temperror`,
   never a pass. The whole check has a deadline (10 s by default), at most 5
-  DKIM signatures are verified (each is a lookup), and DNS answers are cached.
+  DKIM signatures are verified (each is a lookup; the refused ones above are
+  not counted), and DNS answers are cached.
 - Read over IMAP, a message usually does not carry who delivered it
   reliably, so SPF is `none` there and DMARC rests on DKIM.
 - Turn it off with `authenticate: false` in `config/inbox.ts`, or

@@ -220,6 +220,46 @@ async fn only_so_many_signatures_are_checked() {
 }
 
 #[tokio::test]
+async fn refused_signatures_do_not_take_the_place_of_a_valid_one() {
+    // Five relays above the origin signed without covering From: refused
+    // without a lookup, they must not use up the signatures checked.
+    let cache = TxtCache::new(64);
+    let bank = Domain::new();
+    bank.publish(&cache, "bank.test", "v=DMARC1; p=reject");
+    let relay = Domain::new();
+    relay.publish(&cache, "relay.test", "v=DMARC1; p=none");
+    let mut raw = bank.sign("bank.test", &message("ceo@bank.test"));
+    for _ in 0..5 {
+        let key = Ed25519Key::from_pkcs8_der(relay.key.private_key()).unwrap();
+        let signature = DkimSigner::from_key(key)
+            .domain("relay.test")
+            .selector("s1")
+            .headers(["To", "Subject"])
+            .sign(raw.as_bytes())
+            .unwrap();
+        raw = format!("{}{raw}", signature.to_header());
+    }
+    let verdict = authenticate(raw.as_bytes(), &AuthOptions::default(), &no_dns(), &cache)
+        .await
+        .unwrap();
+    assert_eq!(
+        verdict
+            .dkim
+            .iter()
+            .filter(|d| d.result == Outcome::PermError)
+            .count(),
+        5,
+        "{verdict:?}"
+    );
+    assert!(verdict
+        .dkim
+        .iter()
+        .any(|d| d.result == Outcome::Pass && d.domain.as_deref() == Some("bank.test")));
+    assert_eq!(verdict.dmarc, Outcome::Pass);
+    assert_eq!(verdict.summary, Outcome::Pass);
+}
+
+#[tokio::test]
 async fn an_oversized_or_empty_message_is_refused() {
     let cache = TxtCache::new(4);
     let small = AuthOptions {
