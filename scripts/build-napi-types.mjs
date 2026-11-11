@@ -31,7 +31,7 @@ try {
   for (const crate of CRATES) {
     const perCrate = join(scratch, crate)
     writeFileSync(perCrate, '')
-    execFileSync('cargo', ['build', '-p', crate], {
+    execFileSync('cargo', ['build', '--locked', '-p', crate], {
       cwd: packageRoot,
       env: { ...process.env, NAPI_TYPE_DEF_TMP_FOLDER: scratch },
       stdio: ['ignore', 'ignore', 'inherit'],

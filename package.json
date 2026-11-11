@@ -22,10 +22,10 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "build:napi": "cargo build --release -p goldstone-engine-napi && pnpm build:napi-types && node scripts/copy-napi.mjs",
+    "build:napi": "cargo build --locked --release -p goldstone-engine-napi && pnpm build:napi-types && node scripts/copy-napi.mjs",
     "build:napi-types": "node scripts/build-napi-types.mjs",
     "test": "vitest run",
-    "test:rust": "cargo test",
+    "test:rust": "cargo test --locked",
     "lint": "biome check src/ tests/",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit -p .",
