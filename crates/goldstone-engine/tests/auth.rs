@@ -528,6 +528,38 @@ async fn an_rsa_sha1_signature_is_never_a_pass() {
 }
 
 #[tokio::test]
+async fn a_signature_limited_to_part_of_the_body_is_never_a_pass() {
+    // RFC 6376 8.2: with l=, whatever is appended after the signed length
+    // still verifies.
+    let cache = TxtCache::new(64);
+    let bank = Domain::new();
+    bank.publish(&cache, "bank.test", "v=DMARC1; p=reject");
+    let key = Ed25519Key::from_pkcs8_der(bank.key.private_key()).unwrap();
+    let original = message("ceo@bank.test");
+    let signature = DkimSigner::from_key(key)
+        .domain("bank.test")
+        .selector("s1")
+        .headers(["From", "To", "Subject"])
+        .body_length(true)
+        .sign(original.as_bytes())
+        .unwrap();
+    let header = signature.to_header();
+    assert!(header.contains(" l="), "{header}");
+    let raw = format!("{header}{original}\r\nPlease wire the money\r\n");
+    let verdict = authenticate(raw.as_bytes(), &AuthOptions::default(), &no_dns(), &cache)
+        .await
+        .unwrap();
+    assert_eq!(verdict.dkim.len(), 1, "{verdict:?}");
+    assert_eq!(verdict.dkim[0].result, Outcome::Neutral);
+    assert!(verdict.dkim[0]
+        .reason
+        .as_deref()
+        .is_some_and(|r| r.contains("l=")));
+    assert_eq!(verdict.dmarc, Outcome::Fail);
+    assert_eq!(verdict.summary, Outcome::Fail);
+}
+
+#[tokio::test]
 async fn a_signature_that_does_not_cover_from_is_never_a_pass() {
     // RFC 6376 6.1.1: h= without From is a PERMFAIL. Signed over To and
     // Subject only, the From was then rewritten.
