@@ -7,8 +7,9 @@ description = "Parses received mail as hostile input, for Goldstone"
 
 [dependencies]
 # MIME parsing. Fuzzed, and iterative where a recursive parser would let a
-# deeply nested message exhaust the stack.
-mail-parser = "0.11"
+# deeply nested message exhaust the stack. Pinned: structure.rs walks a
+# message the way this release parses it, and an upgrade is checked against it.
+mail-parser = "=0.11.9"
 # HTML sanitizing for display — the library blackhole-engine already uses.
 ammonia = "4"
 # The parser under ammonia, run once on its own to measure the tree before

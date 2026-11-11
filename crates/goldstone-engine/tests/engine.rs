@@ -452,6 +452,104 @@ fn millions_of_parts_are_refused_before_they_are_parsed() {
     );
 }
 
+fn log_lines(n: usize) -> String {
+    (0..n)
+        .map(|i| {
+            format!(
+                "Nov 10 10:{:02}:00 host sshd[{i}]: Accepted publickey\r\n",
+                i % 60
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_body_line_holding_dashes_is_body_text() {
+    // A signature separator, a journalctl banner, 1 MiB of lines after one:
+    // none of it is a delimiter, the message declared no boundary.
+    let long = "a line without a colon, long enough to add up\r\n".repeat(25_000);
+    for body in [
+        format!("Cron output follows.\r\n-- \r\n{}", log_lines(1_100)),
+        format!(
+            "-- Logs begin at Mon 2026-11-10 09:00:00 UTC. --\r\n{}",
+            log_lines(1_100)
+        ),
+        format!("-- \r\n{}\r\n{}", log_lines(1_100), log_lines(1_100)),
+        format!("-- \r\n{long}"),
+    ] {
+        let raw = format!("{HEAD}Content-Type: text/plain; charset=utf-8\r\n\r\n{body}");
+        let m = parse(raw.as_bytes(), &Limits::default()).unwrap();
+        assert!(m.text.is_some_and(|t| t.len() > 50_000));
+    }
+}
+
+#[test]
+fn a_body_line_holding_dashes_in_a_multipart_is_body_text() {
+    let raw = format!(
+        "{HEAD}{}",
+        multipart(
+            "b1",
+            &[format!(
+                "Content-Type: text/plain\r\n\r\nRegards,\r\n-- \r\nBob\r\n{}",
+                log_lines(1_100)
+            )]
+        )
+    );
+    assert!(parse(raw.as_bytes(), &Limits::default()).is_ok());
+}
+
+#[test]
+fn a_digest_or_a_message_named_in_passing_is_not_one() {
+    let big = base64_lines(&vec![0x41; 1_100_000]);
+    for (text, name, content_type) in [
+        (
+            "Here is your weekly digest, report attached.",
+            "report.pdf",
+            "application/pdf",
+        ),
+        ("Export attached.", "messages.csv", "text/csv"),
+    ] {
+        let raw = format!(
+            "{HEAD}{}",
+            multipart(
+                "b1",
+                &[
+                    format!("Content-Type: text/plain\r\n\r\n{text}"),
+                    format!("Content-Type: {content_type}; name=\"{name}\"\r\nContent-Transfer-Encoding: base64\r\n\r\n{big}"),
+                ]
+            )
+        );
+        let m = parse(raw.as_bytes(), &Limits::default()).unwrap();
+        assert_eq!(m.attachments.len(), 1, "{name}");
+    }
+    // Blank lines in a body that says "digest" are paragraphs, not parts.
+    let thread = "line\r\n\r\n".repeat(4_100);
+    let raw = format!("{HEAD}Content-Type: text/plain\r\n\r\nThread digest below.\r\n\r\n{thread}");
+    assert!(parse(raw.as_bytes(), &Limits::default()).is_ok());
+}
+
+#[test]
+fn a_real_digest_still_carries_messages() {
+    let digest = |entries: usize, fields: usize| {
+        let entry = format!(
+            "--d\r\n\r\nFrom: m@example.test\r\n{}\r\nbody\r\n",
+            "a:b\r\n".repeat(fields)
+        );
+        format!(
+            "{HEAD}Content-Type: multipart/digest; boundary=d\r\n\r\n{}--d--\r\n",
+            entry.repeat(entries)
+        )
+    };
+    let m = parse(digest(50, 20).as_bytes(), &Limits::default()).unwrap();
+    assert_eq!(m.attachments.len(), 50);
+    // Each entry is a message with its own header block: 420 of 40 fields
+    // are over the 1 000 parts x 16 + 1 000 fields counted before the parse.
+    assert_eq!(
+        refused_quickly(digest(420, 40).as_bytes()),
+        "E_GOLDSTONE_TOO_MANY_HEADERS"
+    );
+}
+
 #[test]
 fn the_parts_of_a_carried_message_count() {
     let raw = carried(&many_parts(20_000), None);

@@ -9,3 +9,9 @@ members = ["crates/goldstone-engine", "crates/goldstone-engine-napi"]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
+
+# Tests run mail-parser as it runs in production: its debug assertions panic
+# on malformed structure the release build reads on through, and the walk in
+# goldstone-engine's structure.rs is checked against the release behaviour.
+[profile.dev.package.mail-parser]
+debug-assertions = false

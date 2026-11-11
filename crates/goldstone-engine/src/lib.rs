@@ -71,15 +71,6 @@ pub enum ParseError {
         depth: usize,
         max: usize,
     },
-    /// Before parsing: more places a part could start than the parts
-    /// allowed leave room for.
-    TooManyBoundaries {
-        count: usize,
-        max: usize,
-    },
-    TooManyEncodedMessages {
-        max: usize,
-    },
     TooManyHeaders {
         count: usize,
         max: usize,
@@ -92,6 +83,9 @@ pub enum ParseError {
         size: usize,
         max: usize,
     },
+    /// Before parsing: the parser would read a header block on past the
+    /// line that ends it, beyond what was measured.
+    UnendedHeaders,
     TooManyAttachments {
         count: usize,
         max: usize,
@@ -120,13 +114,10 @@ impl ParseError {
             Self::NotAMessage => "E_GOLDSTONE_NOT_A_MESSAGE",
             Self::TooManyParts { .. } => "E_GOLDSTONE_TOO_MANY_PARTS",
             Self::TooDeep { .. } => "E_GOLDSTONE_TOO_DEEP",
-            Self::TooManyBoundaries { .. } | Self::TooManyEncodedMessages { .. } => {
-                "E_GOLDSTONE_TOO_MANY_PARTS"
-            }
             Self::TooManyHeaders { .. } | Self::TooManyHeaderFields { .. } => {
                 "E_GOLDSTONE_TOO_MANY_HEADERS"
             }
-            Self::HeadersTooLarge { .. } => "E_GOLDSTONE_HEADERS_TOO_LARGE",
+            Self::HeadersTooLarge { .. } | Self::UnendedHeaders => "E_GOLDSTONE_HEADERS_TOO_LARGE",
             Self::TooManyAttachments { .. } => "E_GOLDSTONE_TOO_MANY_ATTACHMENTS",
             Self::AttachmentTooLarge { .. } => "E_GOLDSTONE_ATTACHMENT_TOO_LARGE",
             Self::HtmlTooLarge { .. } => "E_GOLDSTONE_HTML_TOO_LARGE",
@@ -151,14 +142,6 @@ impl fmt::Display for ParseError {
                 f,
                 "the message nests {depth} levels deep, over the {max} allowed"
             ),
-            Self::TooManyBoundaries { count, max } => write!(
-                f,
-                "the message has {count} places a part can start, over the {max} its parts limit leaves room for"
-            ),
-            Self::TooManyEncodedMessages { max } => write!(
-                f,
-                "the message carries more than {max} encoded messages"
-            ),
             Self::TooManyHeaders { count, max } => write!(
                 f,
                 "a header block holds {count} fields, over the {max} allowed"
@@ -170,6 +153,10 @@ impl fmt::Display for ParseError {
             Self::HeadersTooLarge { size, max } => write!(
                 f,
                 "a header block is {size} bytes, over the {max} allowed"
+            ),
+            Self::UnendedHeaders => write!(
+                f,
+                "a header block does not end at the line of white space that ends it"
             ),
             Self::TooManyAttachments { count, max } => write!(
                 f,
