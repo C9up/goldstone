@@ -59,6 +59,17 @@ describe("defineConfig", () => {
 		).toBe("E_GOLDSTONE_INSECURE_CONNECTION");
 	});
 
+	it("refuses TLS from the first byte and STARTTLS together, at boot", () => {
+		expect(
+			codeOf(() =>
+				defineConfig({
+					mailbox: "m",
+					mailboxes: { m: { host: "h", secure: true, starttls: true, auth } },
+				}),
+			),
+		).toBe("E_GOLDSTONE_INVALID_CONFIG");
+	});
+
 	it("accepts TLS, STARTTLS, and an insecure test server named as such", () => {
 		expect(() =>
 			defineConfig({
@@ -66,6 +77,7 @@ describe("defineConfig", () => {
 				mailboxes: {
 					tls: { host: "h", auth },
 					starttls: { host: "h", secure: false, starttls: true, auth },
+					starttlsAlone: { host: "h", starttls: true, auth },
 					local: {
 						host: "localhost",
 						secure: false,

@@ -60,3 +60,26 @@ describe("Mailbox — the download is bounded by maxBytes, not by the server", (
 		expect(message?.subject).toBe("big");
 	});
 });
+
+describe("Mailbox — STARTTLS", () => {
+	it("upgrades a plaintext connection when only starttls is set, as documented", async () => {
+		const server = new ScriptedImap("truth", 4096, true);
+		await server.listen();
+		servers.push(server);
+		const box = new Mailbox(
+			"starttls",
+			{
+				host: "127.0.0.1",
+				port: server.port,
+				starttls: true,
+				auth: { user: "u", pass: "p" },
+			},
+			{ authenticate: false },
+		);
+		boxes.push(box);
+		// The scripted server declines the upgrade: what matters is that the
+		// client asked for it on a plaintext connection.
+		expect(await codeOf(() => box.fetch(1))).not.toBe("resolved");
+		expect(server.startTlsAsked).toBe(true);
+	});
+});

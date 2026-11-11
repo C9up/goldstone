@@ -57,8 +57,10 @@ const stop = support.watch(async (message, { uid }) => {
 })
 ```
 
-- **TLS is required**: implicit TLS by default (993), or `starttls: true`,
-  which refuses to go on when the server does not offer STARTTLS. Plaintext
+- **TLS is required**: implicit TLS by default (993), or `starttls: true`
+  (143, plaintext upgraded: `secure` need not be set), which refuses to go on
+  when the server does not offer STARTTLS. `secure: true` with
+  `starttls: true` is refused at `defineConfig`. Plaintext
   or an unchecked certificate need `allowInsecure`, for a local test server.
 - A mailbox opens on first use. `watch()` keeps its own connection in IDLE;
   when it is lost, it reconnects with a growing wait and delivers what

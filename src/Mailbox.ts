@@ -371,7 +371,9 @@ export class Mailbox {
 
 	async #open(): Promise<ImapFlow> {
 		const config = this.#config;
-		const secure = config.secure ?? true;
+		// `starttls` alone means a plaintext connection upgraded: TLS from
+		// the first byte is the default only without it.
+		const secure = config.secure ?? config.starttls !== true;
 		const auth =
 			"pass" in config.auth
 				? { user: config.auth.user, pass: config.auth.pass }

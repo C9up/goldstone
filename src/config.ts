@@ -39,13 +39,14 @@ export interface MailboxConfig {
 	/** Default 993 with `secure`, 143 with `starttls`. */
 	port?: number;
 	/**
-	 * TLS from the first byte (port 993). The default. Turn it off only for
-	 * `starttls`, or — on a development machine — with `allowInsecure`.
+	 * TLS from the first byte (port 993). The default, unless `starttls` is
+	 * set. Turn it off only for `starttls`, or — on a development machine —
+	 * with `allowInsecure`.
 	 */
 	secure?: boolean;
 	/**
-	 * Upgrade a plaintext connection with STARTTLS, and refuse to go on if
-	 * the server does not offer it. Without this, a client upgrades only when
+	 * Upgrade a plaintext connection with STARTTLS (port 143, `secure` off by
+	 * itself), and refuse to go on if the server does not offer it. Without this, a client upgrades only when
 	 * the server says it can — and an attacker on the path can remove that.
 	 */
 	starttls?: boolean;
@@ -109,6 +110,12 @@ export function defineConfig<Mailboxes extends Record<string, MailboxConfig>>(
 }
 
 export function assertSecure(name: string, mailbox: MailboxConfig): void {
+	if (mailbox.secure === true && mailbox.starttls === true) {
+		throw new GoldstoneError(
+			"E_GOLDSTONE_INVALID_CONFIG",
+			`[inbox] mailbox "${name}" asks for TLS from the first byte and for STARTTLS — keep one: starttls: true alone upgrades a plaintext connection`,
+		);
+	}
 	if (mailbox.allowInsecure === true) return;
 	if (mailbox.secure === false && mailbox.starttls !== true) {
 		throw new GoldstoneError(

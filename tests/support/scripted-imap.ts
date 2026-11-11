@@ -14,10 +14,14 @@ export class ScriptedImap {
 	port = 0;
 	/** Body bytes the kernel accepted before the client went away. */
 	bodyBytesWritten = 0;
+	/** The client asked to upgrade the plaintext connection. */
+	startTlsAsked = false;
 
 	constructor(
 		readonly size: SizeAnswer,
 		readonly bodyBytes: number,
+		/** Offer STARTTLS, and decline it when asked. */
+		readonly offersStartTls = false,
 	) {
 		this.#server = createServer((socket) => this.#serve(socket));
 	}
@@ -41,7 +45,10 @@ export class ScriptedImap {
 		this.#sockets.add(socket);
 		socket.on("close", () => this.#sockets.delete(socket));
 		socket.on("error", () => {});
-		socket.write("* OK [CAPABILITY IMAP4rev1 UIDPLUS LITERAL+] ready\r\n");
+		const startTls = this.offersStartTls ? " STARTTLS" : "";
+		socket.write(
+			`* OK [CAPABILITY IMAP4rev1 UIDPLUS LITERAL+${startTls}] ready\r\n`,
+		);
 		let buffer = "";
 		socket.on("data", (chunk) => {
 			buffer += chunk.toString("latin1");
@@ -61,7 +68,10 @@ export class ScriptedImap {
 		const [tag = "", command = "", ...rest] = line.split(" ");
 		const verb = command.toUpperCase();
 		const args = rest.join(" ");
-		if (verb === "LOGIN") {
+		if (verb === "STARTTLS") {
+			this.startTlsAsked = true;
+			socket.end(`${tag} NO not today\r\n`);
+		} else if (verb === "LOGIN") {
 			socket.write(`${tag} OK [CAPABILITY IMAP4rev1 UIDPLUS LITERAL+] in\r\n`);
 		} else if (verb === "SELECT" || verb === "EXAMINE") {
 			socket.write(
