@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { GoldstoneError, Mailbox } from "../src/index.js";
 import { ScriptedImap, type SizeAnswer } from "./support/scripted-imap.js";
+import { ScriptedMailbox } from "./support/scripted-mailbox.js";
 
 const MAX_BYTES = 1024 * 1024;
 const SIXTY_MIB = 60 * 1024 * 1024;
@@ -81,5 +82,41 @@ describe("Mailbox — STARTTLS", () => {
 		// client asked for it on a plaintext connection.
 		expect(await codeOf(() => box.fetch(1))).not.toBe("resolved");
 		expect(server.startTlsAsked).toBe(true);
+	});
+});
+
+describe("Mailbox — watch", () => {
+	it("delivers a message that arrives while the backlog is being read", async () => {
+		const server = new ScriptedMailbox(2, 1);
+		await server.listen();
+		const box = new Mailbox(
+			"watched",
+			{
+				host: "127.0.0.1",
+				port: server.port,
+				secure: false,
+				allowInsecure: true,
+				auth: { user: "u", pass: "p" },
+			},
+			{ authenticate: false },
+		);
+		boxes.push(box);
+		const seen: number[] = [];
+		const all = new Promise<void>((resolve) => {
+			box.watch(
+				(_message, { uid }) => {
+					seen.push(uid);
+					if (seen.length === 3) resolve();
+				},
+				{ afterUid: 0, onError: () => {} },
+			);
+		});
+		const timeout = new Promise<void>((resolve) => setTimeout(resolve, 3000));
+		await Promise.race([all, timeout]);
+		await box.close();
+		await server.close();
+		// Message 3 arrived during the FETCH of message 1: no other message
+		// and no reconnection comes to deliver it.
+		expect(seen).toEqual([1, 2, 3]);
 	});
 });

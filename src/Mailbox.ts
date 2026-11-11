@@ -242,8 +242,11 @@ export class Mailbox {
 					uidValidity = opened.uidValidity;
 					if (last === undefined) last = opened.uidNext - 1;
 					attempt = 0;
-					await deliverNew(client);
-					await new Promise<void>((resolve) => {
+					await new Promise<void>((resolve, reject) => {
+						// Listening before the catch-up: the server announces
+						// mail that arrives during its FETCHes, and an EXISTS
+						// nobody hears leaves the message waiting for the next.
+						// Every delivery runs after the previous one.
 						let queue = Promise.resolve();
 						client.on("exists", () => {
 							queue = queue.then(() => deliverNew(client)).catch(report);
@@ -252,6 +255,8 @@ export class Mailbox {
 						client.on("error", () => {});
 						wake = resolve;
 						if (stopped) resolve();
+						// A catch-up that fails reopens the connection.
+						queue = deliverNew(client).catch(reject);
 					});
 				} catch (error) {
 					if (!stopped) report(error);
