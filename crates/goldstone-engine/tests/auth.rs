@@ -259,6 +259,57 @@ async fn refused_signatures_do_not_take_the_place_of_a_valid_one() {
     assert_eq!(verdict.summary, Outcome::Pass);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn the_parse_leaves_the_async_workers_free() {
+    // One async worker: a parse run on it would stall every other task (the
+    // DNS checks of other messages, with their deadline running) until done.
+    let raw = format!(
+        "From: a@b.test\r\nContent-Type: text/plain\r\n\r\n{}",
+        "a line of text, nothing more\r\n".repeat(700_000)
+    );
+    let ticks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let ticker = {
+        let ticks = ticks.clone();
+        tokio::spawn(async move {
+            loop {
+                ticks.lock().unwrap().push(std::time::Instant::now());
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    // Spawned, as the binding's calls run: on the worker, not on the test's
+    // own thread.
+    let check = tokio::spawn(async move {
+        let cache = TxtCache::new(4);
+        let options = AuthOptions {
+            timeout: Duration::from_millis(1),
+            ..AuthOptions::default()
+        };
+        let started = std::time::Instant::now();
+        authenticate(raw.as_bytes(), &options, &no_dns(), &cache)
+            .await
+            .unwrap();
+        started.elapsed()
+    });
+    let took = check.await.unwrap();
+    ticker.abort();
+    let ticks = ticks.lock().unwrap();
+    let longest = ticks
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .max()
+        .unwrap_or_default();
+    assert!(
+        took > Duration::from_millis(60),
+        "the parse should take a while: {took:?}"
+    );
+    assert!(
+        longest < took / 2,
+        "the other task stalled {longest:?} of {took:?}"
+    );
+}
+
 #[tokio::test]
 async fn an_oversized_or_empty_message_is_refused() {
     let cache = TxtCache::new(4);

@@ -221,7 +221,10 @@ pub fn not_found_record() -> Txt {
 }
 
 /// Check a raw message. It is parsed with [`crate::parse_mail`], the parse
-/// the application reads, under the default limits and `max_bytes`.
+/// the application reads, under the default limits and `max_bytes`. On a
+/// multi-threaded runtime the parse runs in `block_in_place`: it is CPU work
+/// on hostile bytes, and on an async worker it would stall the other checks'
+/// DNS lookups while their deadline runs.
 pub async fn authenticate(
     raw: &[u8],
     options: &AuthOptions,
@@ -232,7 +235,15 @@ pub async fn authenticate(
         max_bytes: options.max_bytes,
         ..crate::Limits::default()
     };
-    let parsed = crate::parse_mail(raw, &limits)?;
+    let parse = || crate::parse_mail(raw, &limits);
+    let parsed = match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(parse)
+        }
+        // block_in_place panics elsewhere; a current-thread runtime has no
+        // other worker to hand the tasks to anyway.
+        _ => parse(),
+    }?;
     Ok(authenticate_parsed(&parsed, options, authenticator, cache).await)
 }
 

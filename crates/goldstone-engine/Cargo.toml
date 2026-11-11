@@ -18,8 +18,8 @@ html5ever = "0.40"
 # DKIM, SPF, DMARC and ARC. On ring rather than the default aws-lc-rs, a C
 # library that is heavy to cross-compile for five platforms.
 mail-auth = { version = "0.13", default-features = false, features = ["ring", "arc"] }
-# The deadline on the DNS checks.
-tokio = { version = "1", features = ["time"] }
+# The deadline on the DNS checks, and block_in_place for the parse.
+tokio = { version = "1", features = ["time", "rt-multi-thread"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
