@@ -21,7 +21,7 @@
 
 import { fromEngine, GoldstoneError } from "./errors.js";
 import type { JsAuthOptions, JsVerdict } from "./native/generated.js";
-import { engine } from "./native.js";
+import { engine, snapshot } from "./native.js";
 
 /** A check's outcome, in the words of RFC 8601. */
 export type AuthResult =
@@ -173,7 +173,7 @@ export async function authenticate(
 	options?: AuthenticateOptions,
 ): Promise<Authenticity> {
 	const bounds = nativeOptions(options);
-	const bytes = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+	const bytes = snapshot(raw);
 	try {
 		return fromNative(await engine().authenticateMessage(bytes, bounds));
 	} catch (error) {

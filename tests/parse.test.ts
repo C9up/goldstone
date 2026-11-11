@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+	authenticate,
 	fromEngine,
 	GoldstoneError,
 	isNativeAvailable,
 	parseMessage,
+	readMessage,
 } from "../src/index.js";
 
 const HEAD =
@@ -66,6 +68,29 @@ describe("parseMessage", () => {
 	it("reads bytes that do not start at the beginning of their buffer", async () => {
 		const raw = bytes(`garbage${HEAD}Content-Type: text/plain\r\n\r\nbody\r\n`);
 		expect((await parseMessage(raw.subarray(7))).subject).toBe("Facture n° 42");
+	});
+
+	it("reads the bytes as they were when called, whatever the caller writes after", async () => {
+		// A read buffer reused at once: the engine runs off this thread and
+		// must not see the next message half-written over this one.
+		const text = `${HEAD}Content-Type: text/plain\r\n\r\n${"line of the body\r\n".repeat(300_000)}`;
+		const calls = [
+			(raw: Uint8Array) => parseMessage(raw),
+			(raw: Uint8Array) => readMessage(raw, { authenticate: false }),
+			(raw: Uint8Array) => readMessage(raw, { authenticate: { timeoutMs: 1 } }),
+		];
+		for (const call of calls) {
+			const raw = bytes(text);
+			const pending = call(raw);
+			raw.fill(0x2d);
+			const message = await pending;
+			expect(message.subject).toBe("Facture n° 42");
+			expect(message.text?.startsWith("line of the body")).toBe(true);
+		}
+		const raw = bytes(text);
+		const pending = authenticate(raw, { timeoutMs: 1 });
+		raw.fill(0x2d);
+		expect((await pending).fromDomain).toBe("example.test");
 	});
 
 	it("sanitizes the HTML, and hands the original only to the method that says so", async () => {

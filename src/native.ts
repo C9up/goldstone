@@ -38,6 +38,17 @@ export function isNativeAvailable(): boolean {
 	return native !== undefined;
 }
 
+/**
+ * The bytes handed to the engine: a copy, taken here on the JavaScript
+ * thread. The engine reads them later, off this thread, more than once (the
+ * walk that bounds the structure, then the parse); on a view of the caller's
+ * memory, a buffer reused or written meanwhile would make it bound one
+ * message and parse another.
+ */
+export function snapshot(raw: Uint8Array): Buffer {
+	return Buffer.from(raw);
+}
+
 /** The engine, or a refusal explaining how to get one. */
 export function engine(): NativeGoldstone {
 	if (native === undefined) {

@@ -21,7 +21,7 @@ import {
 } from "./authenticity.js";
 import { fromEngine, GoldstoneError } from "./errors.js";
 import type { JsHtmlOptions, JsLimits, JsMessage } from "./native/generated.js";
-import { engine } from "./native.js";
+import { engine, snapshot } from "./native.js";
 
 /** Bounds on one message; each one left out keeps its default. */
 export interface Limits {
@@ -240,7 +240,7 @@ async function parseNative(
 ): Promise<JsMessage> {
 	const bounds = nativeLimits(options.limits);
 	const html = htmlOptions(options);
-	const bytes = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+	const bytes = snapshot(raw);
 	try {
 		return await engine().parseMessage(bytes, bounds, html);
 	} catch (error) {
@@ -276,7 +276,7 @@ export async function readMessage(
 			? { maxBytes: options.limits?.maxBytes }
 			: { maxBytes: options.limits?.maxBytes, ...options.authenticate },
 	);
-	const bytes = Buffer.from(raw.buffer, raw.byteOffset, raw.byteLength);
+	const bytes = snapshot(raw);
 	try {
 		const read = await engine().readMessage(bytes, bounds, authOptions, html);
 		return new ReceivedMessage(read.message, fromNative(read.authenticity));

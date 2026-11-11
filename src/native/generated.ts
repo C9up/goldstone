@@ -104,6 +104,11 @@ export interface JsReadMessage {
  * Parse one received message, off the JavaScript thread: parsing and
  * sanitizing are CPU work on bytes a stranger sent. Rejects with
  * `E_GOLDSTONE_*: …` on a message that breaks a limit or is not a message.
+ *
+ * `raw`, here and in the two calls below, is read on a runtime thread while
+ * JavaScript runs on: it must be memory nothing writes to meanwhile, which
+ * the TypeScript side ensures by handing a copy (`snapshot` in native.ts).
+ * A copy made here would be made on the runtime thread, too late.
  */
 
 export declare function parseMessage(
