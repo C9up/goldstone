@@ -92,6 +92,24 @@ router.post("/inbound/mailgun/mime", createMailgunInboundHandler({
 Point the Mailgun route's *forward* action at a URL ending in `mime`: that is
 what makes Mailgun send the message as received.
 
+The handler reads the fields from `request.body()`, which Ream fills only
+when its body parser has read the request: the route must run behind
+`BodyParserMiddleware` (registered globally in a scaffolded app). Mailgun
+posts `multipart/form-data`, or urlencoded; raise both limits above the
+largest message you accept (25 MiB by default; the parser's defaults are
+1 MB for a form and 20 MB for multipart), in `config/bodyparser.ts` so the
+server applies them too:
+
+```ts
+// config/bodyparser.ts
+export default {
+  form: { limit: "30mb" },
+  multipart: { limit: "30mb" },
+}
+```
+
+Without the parser, every delivery is answered 401, its fields missing.
+
 Mailgun signs a timestamp and a token — not the message. So the handler
 refuses a timestamp older than two minutes (`maxAgeSeconds`, an integer
 from 1 to 86 400 — anything else is refused when the handler is created,

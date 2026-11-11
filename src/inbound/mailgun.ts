@@ -10,6 +10,12 @@
  * Configure the Mailgun route to forward to a URL ending in `mime`: that is
  * what makes Mailgun send `body-mime`, the message as received.
  *
+ * The fields are read from `ctx.request.body()`, which holds them only once
+ * Ream's body parser has read the form Mailgun posts (multipart/form-data or
+ * urlencoded): the route must run behind `BodyParserMiddleware`, with form
+ * and multipart limits above the largest message accepted. Without it every
+ * delivery is answered 401, its fields missing.
+ *
  * Mailgun signs `timestamp` + `token` with the webhook signing key — and
  * nothing else: the signature does not cover the message. So a signature is
  * only worth what its freshness and uniqueness are worth, and both are
