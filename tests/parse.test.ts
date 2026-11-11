@@ -326,6 +326,42 @@ describe("parseMessage — structure bounded before parsing", () => {
 			"E_GOLDSTONE_TOO_DEEP",
 		);
 	});
+
+	it("refuses boundaries that never occur before searching the message for each", async () => {
+		// 900 parts declaring a boundary that never comes, in front of 20 MB:
+		// each was searched for up to the end, 8 s of work per call.
+		const parts = Array.from(
+			{ length: 900 },
+			(_, i) =>
+				`--X\r\nContent-Type: multipart/mixed; boundary=never-${i}\r\n\r\nx\r\n`,
+		).join("");
+		const filler = "filler text that holds no delimiter at all\r\n".repeat(
+			(20 * 1024 * 1024) / 44,
+		);
+		const raw = bytes(
+			`${HEAD}Content-Type: multipart/mixed; boundary=X\r\n\r\n${parts}--X\r\n\r\n${filler}--X--\r\n`,
+		);
+		const calls = [
+			() => parseMessage(raw),
+			() => readMessage(raw, { authenticate: false }),
+			() => readMessage(raw, { authenticate: { timeoutMs: 1 } }),
+			() => authenticate(raw, { timeoutMs: 1 }),
+		];
+		for (const call of calls) {
+			const started = performance.now();
+			expect(await codeOf(call)).toBe("E_GOLDSTONE_MISSING_BOUNDARIES");
+			expect(performance.now() - started).toBeLessThan(1_000);
+		}
+	});
+
+	it("refuses a boundary too long to compare at every dash", async () => {
+		const raw = bytes(
+			`${HEAD}Content-Type: multipart/mixed; boundary="${"-".repeat(500_000)}x"\r\n\r\n${"-".repeat(4 * 1024 * 1024)}\r\n`,
+		);
+		expect(await codeOf(() => parseMessage(raw))).toBe(
+			"E_GOLDSTONE_BOUNDARY_TOO_LONG",
+		);
+	});
 });
 
 describe("parseMessage — remote content", () => {

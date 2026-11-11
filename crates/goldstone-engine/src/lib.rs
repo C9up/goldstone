@@ -83,6 +83,17 @@ pub enum ParseError {
         size: usize,
         max: usize,
     },
+    /// Before parsing: multiparts whose boundary never occurs would have the
+    /// parser search the rest of the message for each of them.
+    MissingBoundaries {
+        scanned: usize,
+        max: usize,
+    },
+    /// A multipart boundary too long to compare at every `--` of a body.
+    BoundaryTooLong {
+        size: usize,
+        max: usize,
+    },
     /// Before parsing: the parser would read a header block on past the
     /// line that ends it, beyond what was measured.
     UnendedHeaders,
@@ -118,6 +129,8 @@ impl ParseError {
                 "E_GOLDSTONE_TOO_MANY_HEADERS"
             }
             Self::HeadersTooLarge { .. } | Self::UnendedHeaders => "E_GOLDSTONE_HEADERS_TOO_LARGE",
+            Self::MissingBoundaries { .. } => "E_GOLDSTONE_MISSING_BOUNDARIES",
+            Self::BoundaryTooLong { .. } => "E_GOLDSTONE_BOUNDARY_TOO_LONG",
             Self::TooManyAttachments { .. } => "E_GOLDSTONE_TOO_MANY_ATTACHMENTS",
             Self::AttachmentTooLarge { .. } => "E_GOLDSTONE_ATTACHMENT_TOO_LARGE",
             Self::HtmlTooLarge { .. } => "E_GOLDSTONE_HTML_TOO_LARGE",
@@ -153,6 +166,14 @@ impl fmt::Display for ParseError {
             Self::HeadersTooLarge { size, max } => write!(
                 f,
                 "a header block is {size} bytes, over the {max} allowed"
+            ),
+            Self::MissingBoundaries { scanned, max } => write!(
+                f,
+                "multipart boundaries that never occur would have the parser scan {scanned} bytes, over the {max} allowed"
+            ),
+            Self::BoundaryTooLong { size, max } => write!(
+                f,
+                "a multipart boundary is {size} bytes, over the {max} allowed"
             ),
             Self::UnendedHeaders => write!(
                 f,

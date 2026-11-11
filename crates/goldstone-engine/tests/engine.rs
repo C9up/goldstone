@@ -452,6 +452,69 @@ fn millions_of_parts_are_refused_before_they_are_parsed() {
     );
 }
 
+/// `parts` parts, each a multipart declaring a boundary that never occurs,
+/// in front of `filler` bytes of body.
+fn unclosed_multiparts(parts: usize, filler: usize) -> String {
+    let mut raw = format!("{HEAD}Content-Type: multipart/mixed; boundary=X\r\n\r\n");
+    for i in 0..parts {
+        raw.push_str(&format!(
+            "--X\r\nContent-Type: multipart/mixed; boundary=never-{i}\r\n\r\nx\r\n"
+        ));
+    }
+    raw.push_str("--X\r\nContent-Type: text/plain\r\n\r\n");
+    let line = "filler text that holds no delimiter at all, line after line\r\n";
+    raw.push_str(&line.repeat(filler / line.len()));
+    raw.push_str("--X--\r\n");
+    raw
+}
+
+#[test]
+fn boundaries_that_never_occur_are_refused_before_the_parse() {
+    // Each part's missing boundary is looked for up to the end of the
+    // message: 900 parts in front of 20 MB cost 18 GB of searching.
+    let raw = unclosed_multiparts(900, 20 * 1024 * 1024);
+    assert_eq!(
+        refused_quickly(raw.as_bytes()),
+        "E_GOLDSTONE_MISSING_BOUNDARIES"
+    );
+}
+
+#[test]
+fn a_few_boundaries_that_never_occur_are_still_read() {
+    // A broken mailer's multipart without its parts: read as text, as the
+    // parser reads it, in a message of any size.
+    let raw = unclosed_multiparts(3, 5 * 1024 * 1024);
+    let m = parse(raw.as_bytes(), &Limits::default()).expect("read");
+    assert!(m.text.is_some_and(|text| text.contains("filler text")));
+    let many_small = unclosed_multiparts(90, 0);
+    assert!(parse(many_small.as_bytes(), &Limits::default()).is_ok());
+}
+
+#[test]
+fn a_boundary_too_long_to_search_for_is_refused() {
+    // Every `--` of the body is compared with the whole boundary: a 500 kB
+    // boundary over 4 MB of dashes is 44 s of comparing.
+    let boundary = format!("{}x", "-".repeat(500_000));
+    let raw = format!(
+        "{HEAD}Content-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\r\n{}\r\n",
+        "-".repeat(4 * 1024 * 1024)
+    );
+    assert_eq!(
+        refused_quickly(raw.as_bytes()),
+        "E_GOLDSTONE_BOUNDARY_TOO_LONG"
+    );
+    // The longest RFC 2046 allows, and room over it for mailers that
+    // overrun it.
+    for length in [70, 200] {
+        let boundary = "b".repeat(length);
+        let raw = format!(
+            "{HEAD}Content-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\r\n--{boundary}\r\nContent-Type: text/plain\r\n\r\nhello\r\n--{boundary}--\r\n"
+        );
+        let m = parse(raw.as_bytes(), &Limits::default()).expect("read");
+        assert_eq!(m.text.as_deref(), Some("hello"));
+    }
+}
+
 fn log_lines(n: usize) -> String {
     (0..n)
         .map(|i| {

@@ -157,7 +157,11 @@ input from whoever sent it, so:
   `…_ATTACHMENT_TOO_LARGE`). A part starts only at a delimiter of the
   boundary its multipart declared, or after the header of a carried message:
   a `-- ` signature, a pasted log or a large attachment is body, whatever it
-  says;
+  says. The search for those delimiters is bounded too: a multipart whose
+  boundary never occurs is searched for up to the end of the message, so
+  past four such scans of a `maxBytes` message the message is refused
+  (`E_GOLDSTONE_MISSING_BOUNDARIES`), and so is a boundary over 256 bytes
+  (`E_GOLDSTONE_BOUNDARY_TOO_LONG`; RFC 2046 allows 70);
 - **`html` is sanitized** — no script, no event handler, no `javascript:` URL,
   and nothing a browser would load by itself: remote images, backgrounds and
   posters are removed, because loading one tells the sender the message was

@@ -20,6 +20,17 @@
 //! quoted-printable is decoded by mail-parser's decoder and walked the same
 //! way, as many levels down as mail-parser parses it.
 //!
+//! The walk also bounds the parser's boundary searches. A multipart whose
+//! boundary never occurs is searched for up to the end of the message, and
+//! the parse goes on from where the search started: every such part costs a
+//! scan of the rest of the message, 900 of them in front of 20 MB are 18 GB
+//! of searching. The bytes scanned by those failed searches are added up and
+//! the message is refused past four scans of the largest message the limits
+//! accept. The other searches move the parse on to the delimiter they find,
+//! or end it, so they scan the message about once in all. And every `--` of
+//! a body is compared with the whole boundary, so a boundary is refused past
+//! a few times the 70 characters RFC 2046 allows.
+//!
 //! The walk mirrors `MessageParser::parse` of the mail-parser release pinned
 //! in Cargo.toml (src/parsers/message.rs): an upgrade has to be checked
 //! against it, and the tests compare the walk's counts with what the parse
@@ -37,6 +48,14 @@ const ENCODED_LEVELS: usize = 3;
 /// own header.
 const FIELDS_PER_PART: usize = 16;
 
+/// Failed boundary searches the parse may run, in scans of a message of
+/// `max_bytes`.
+const FAILED_SEARCH_SCANS: usize = 4;
+
+/// The longest boundary searched for. RFC 2046 section 5.1.1 allows 70
+/// characters; the rest is room for mailers that overrun it.
+const MAX_BOUNDARY_BYTES: usize = 256;
+
 /// What the parse will build, counted through every carried message.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Counts {
@@ -48,9 +67,23 @@ struct Budget {
     counts: Counts,
     max_parts: usize,
     max_fields: usize,
+    /// Bytes scanned by the boundary searches that found nothing.
+    searched: usize,
+    max_searched: usize,
 }
 
 impl Budget {
+    fn add_failed_search(&mut self, scanned: usize) -> Result<(), ParseError> {
+        self.searched = self.searched.saturating_add(scanned);
+        if self.searched > self.max_searched {
+            return Err(ParseError::MissingBoundaries {
+                scanned: self.searched,
+                max: self.max_searched,
+            });
+        }
+        Ok(())
+    }
+
     fn add_block(&mut self, fields: usize) -> Result<(), ParseError> {
         self.counts.parts += 1;
         if self.counts.parts > self.max_parts {
@@ -106,6 +139,8 @@ pub(crate) fn count(raw: &[u8], limits: &Limits) -> Result<Counts, ParseError> {
             .max_parts
             .saturating_mul(FIELDS_PER_PART)
             .saturating_add(limits.max_headers),
+        searched: 0,
+        max_searched: limits.max_bytes.saturating_mul(FAILED_SEARCH_SCANS),
     };
     walk(raw, ENCODED_LEVELS, 0, limits, &mut budget)?;
     Ok(budget.counts)
@@ -178,6 +213,18 @@ fn walk(
 
         if is_multipart {
             if let Some(boundary) = content_type.and_then(|c| c.attribute("boundary")) {
+                if boundary.len() > MAX_BOUNDARY_BYTES {
+                    return Err(ParseError::BoundaryTooLong {
+                        size: boundary.len(),
+                        max: MAX_BOUNDARY_BYTES,
+                    });
+                }
+                // An empty boundary is not searched for.
+                let scanned = if boundary.is_empty() {
+                    0
+                } else {
+                    data.len() - stream.offset()
+                };
                 if stream.seek_next_part(boundary.as_bytes()) {
                     let inner = State {
                         mime,
@@ -190,7 +237,9 @@ fn walk(
                     stream.skip_crlf();
                     continue;
                 }
-                // A boundary that never occurs: the body is text.
+                // A boundary that never occurs: the body is text, read from
+                // where the search started.
+                budget.add_failed_search(scanned)?;
                 mime = Mime::Other;
             }
         }

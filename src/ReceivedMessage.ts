@@ -223,8 +223,8 @@ function htmlOptions(options: ParseOptions): JsHtmlOptions {
  *
  * Rejects with a `GoldstoneError` on a message over a limit
  * (`E_GOLDSTONE_MESSAGE_TOO_LARGE`, `…_TOO_MANY_PARTS`, `…_TOO_DEEP`,
- * `…_TOO_MANY_HEADERS`, `…_HEADERS_TOO_LARGE`,
- * `…_TOO_MANY_ATTACHMENTS`, `…_ATTACHMENT_TOO_LARGE`) or not a message at
+ * `…_TOO_MANY_HEADERS`, `…_HEADERS_TOO_LARGE`, `…_MISSING_BOUNDARIES`,
+ * `…_BOUNDARY_TOO_LONG`, `…_TOO_MANY_ATTACHMENTS`, `…_ATTACHMENT_TOO_LARGE`) or not a message at
  * all (`E_GOLDSTONE_NOT_A_MESSAGE`).
  */
 export async function parseMessage(
