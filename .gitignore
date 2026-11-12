@@ -12,3 +12,5 @@ coverage/
 *.log
 .turbo/
 .generated-config-*
+# Workstream: the maintainer's local tracking, never published
+.workstream/
