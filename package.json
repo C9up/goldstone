@@ -1,6 +1,6 @@
 {
   "name": "@c9up/goldstone",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Goldstone — reading mail for the Ream framework: IMAP mailboxes and inbound mail, received as hostile input",
   "license": "MIT",
   "type": "module",
