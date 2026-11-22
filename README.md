@@ -146,15 +146,10 @@ input from whoever sent it, so:
 - **the size is checked before a byte is parsed**, then the structure is
   bounded — parts, nesting depth, header fields and header size, number and
   size of attachments. Parts and nesting count through the messages a message
-  carries (message/rfc822). The parser stops at the part and depth limits
-  itself, and reads a message in one pass whatever its boundaries do (one
-  that never occurs, one of any length). Header fields are bounded before
-  the parse: a message holding more lines with a colon than its size allows
-  (one per 16 bytes of `maxBytes`, never fewer than the fields allowed) is
-  refused unread, so a message made of millions of tiny headers costs no
-  memory. A carried message that is base64 or quoted-printable encoded is
-  handed out as an attachment and not parsed: its parts and headers cannot be
-  counted before it is decoded.
+  carries (message/rfc822), encoded or not. Parts and headers are bounded
+  before the parse too: the message is first walked the way the parser walks
+  it, keeping only counts, so a message made of millions of tiny parts or
+  headers is refused before it costs any memory.
   Each limit has a default and can be set per call
   (`parseMessage(raw, { limits: { maxBytes } })`); over one, a `GoldstoneError` names it
   (`E_GOLDSTONE_MESSAGE_TOO_LARGE`, `…_TOO_MANY_PARTS`, `…_TOO_DEEP`,
@@ -162,8 +157,11 @@ input from whoever sent it, so:
   `…_ATTACHMENT_TOO_LARGE`). A part starts only at a delimiter of the
   boundary its multipart declared, or after the header of a carried message:
   a `-- ` signature, a pasted log or a large attachment is body, whatever it
-  says. Attachments are what RFC 8621 calls attachments, plus the images,
-  audio and video the body shows, so a `cid:` the HTML keeps finds its part;
+  says. The search for those delimiters is bounded too: a multipart whose
+  boundary never occurs is searched for up to the end of the message, so
+  past four such scans of a `maxBytes` message the message is refused
+  (`E_GOLDSTONE_MISSING_BOUNDARIES`), and so is a boundary over 256 bytes
+  (`E_GOLDSTONE_BOUNDARY_TOO_LONG`; RFC 2046 allows 70);
 - **`html` is sanitized** — no script, no event handler, no `javascript:` URL,
   and nothing a browser would load by itself: remote images, backgrounds and
   posters are removed, because loading one tells the sender the message was

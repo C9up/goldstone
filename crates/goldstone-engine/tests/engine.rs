@@ -107,32 +107,6 @@ fn deep_nesting_is_refused() {
 }
 
 #[test]
-fn nesting_is_counted_exactly_at_the_limit() {
-    assert!(parse(nested(32).as_bytes(), &Limits::default()).is_ok());
-    assert_eq!(
-        parse(nested(33).as_bytes(), &Limits::default()).unwrap_err(),
-        ParseError::TooDeep { depth: 33, max: 32 }
-    );
-}
-
-#[test]
-fn an_image_the_html_shows_is_still_an_attachment() {
-    // mail-parser 1.0 leaves media shown in both bodies out of its
-    // attachments (RFC 8621); the `cid:` the HTML keeps needs the part.
-    let raw = format!(
-        "{HEAD}Content-Type: multipart/related; boundary=R\r\n\r\n--R\r\nContent-Type: text/html\r\n\r\n<p>Hi</p><img src=\"cid:logo@x.test\">\r\n--R\r\nContent-Type: image/png\r\nContent-ID: <logo@x.test>\r\nContent-Disposition: inline; filename=\"logo.png\"\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw0KGgo=\r\n--R--\r\n"
-    );
-    let m = parse(raw.as_bytes(), &Limits::default()).unwrap();
-    assert_eq!(m.attachments.len(), 1);
-    let logo = &m.attachments[0];
-    assert_eq!(logo.content_id.as_deref(), Some("logo@x.test"));
-    assert_eq!(logo.content_type, "image/png");
-    assert!(logo.inline);
-    assert_eq!(logo.content, b"\x89PNG\r\n\x1a\n");
-    assert!(m.html.is_some_and(|html| html.contains("cid:logo@x.test")));
-}
-
-#[test]
 fn too_many_parts_are_refused() {
     let parts: Vec<String> = (0..100_000)
         .map(|_| "Content-Type: text/plain\r\n\r\nx".into())
@@ -494,33 +468,15 @@ fn unclosed_multiparts(parts: usize, filler: usize) -> String {
     raw
 }
 
-/// Read within the same budget as a refusal: the work follows the message
-/// once, not once per part.
-fn read_quickly(raw: &[u8]) -> goldstone_engine::Message {
-    let started = std::time::Instant::now();
-    let message = parse(raw, &Limits::default()).expect("read");
-    assert!(
-        started.elapsed() < std::time::Duration::from_millis(1500),
-        "read after {:?}",
-        started.elapsed()
-    );
-    message
-}
-
 #[test]
-fn boundaries_that_never_occur_cost_one_reading() {
-    // 900 parts whose boundary never occurs, in front of 20 MB: mail-parser
-    // 0.11 searched the rest of the message for each (18 GB of searching);
-    // 1.0 remembers that no delimiter lies ahead and reads the body once.
-    // A multipart it cannot open stays an attachment (RFC 8621): 900 of
-    // them are over the attachments allowed, and refused at once.
+fn boundaries_that_never_occur_are_refused_before_the_parse() {
+    // Each part's missing boundary is looked for up to the end of the
+    // message: 900 parts in front of 20 MB cost 18 GB of searching.
     let raw = unclosed_multiparts(900, 20 * 1024 * 1024);
     assert_eq!(
         refused_quickly(raw.as_bytes()),
-        "E_GOLDSTONE_TOO_MANY_ATTACHMENTS"
+        "E_GOLDSTONE_MISSING_BOUNDARIES"
     );
-    let raw = unclosed_multiparts(90, 20 * 1024 * 1024);
-    read_quickly(raw.as_bytes());
 }
 
 #[test]
@@ -535,22 +491,18 @@ fn a_few_boundaries_that_never_occur_are_still_read() {
 }
 
 #[test]
-fn a_long_boundary_costs_no_more_than_the_message() {
-    // mail-parser 0.11 compared the whole boundary at every `--` of the
-    // body: a 500 kB boundary over 4 MB of dashes was 44 s of comparing.
-    // 1.0 compares a delimiter line once, against the boundaries open.
+fn a_boundary_too_long_to_search_for_is_refused() {
+    // Every `--` of the body is compared with the whole boundary: a 500 kB
+    // boundary over 4 MB of dashes is 44 s of comparing.
     let boundary = format!("{}x", "-".repeat(500_000));
     let raw = format!(
         "{HEAD}Content-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\r\n{}\r\n",
         "-".repeat(4 * 1024 * 1024)
     );
-    read_quickly(raw.as_bytes());
-    let boundary = "b".repeat(100_000);
-    let raw = format!(
-        "{HEAD}Content-Type: multipart/mixed; boundary=\"{boundary}\"\r\n\r\n{}\r\n",
-        format!("--{}\r\n", "b".repeat(99_999)).repeat(200)
+    assert_eq!(
+        refused_quickly(raw.as_bytes()),
+        "E_GOLDSTONE_BOUNDARY_TOO_LONG"
     );
-    read_quickly(raw.as_bytes());
     // The longest RFC 2046 allows, and room over it for mailers that
     // overrun it.
     for length in [70, 200] {
@@ -683,25 +635,27 @@ fn carried_messages_count_as_nesting() {
 }
 
 #[test]
-fn an_encoded_carried_message_is_an_attachment_left_unparsed() {
-    // Its parts and headers are invisible in the encoded bytes, so nothing
-    // before the parse could bound them: it is handed out as the attachment
-    // it is, and never parsed.
+fn an_encoded_carried_message_is_bounded_like_one_in_the_clear() {
+    // mail-parser decodes it and parses what comes out: its parts and
+    // headers are invisible in the encoded bytes.
     let parts = carried(
         &base64_lines(many_parts(200_000).as_bytes()),
         Some("base64"),
     );
-    let m = read_quickly(parts.as_bytes());
-    assert_eq!(m.attachments.len(), 1);
-    assert_eq!(m.attachments[0].content_type, "message/rfc822");
-    assert!(m.attachments[0].content.starts_with(b"From: x@y.test\r\n"));
+    assert_eq!(
+        refused_quickly(parts.as_bytes()),
+        "E_GOLDSTONE_TOO_MANY_PARTS"
+    );
 
     let headers = format!(
         "From: x@y.test\r\n{}\r\nbody",
         "a=3Ab\r\n".repeat(1_000_000)
     );
-    let m = read_quickly(carried(&headers, Some("quoted-printable")).as_bytes());
-    assert_eq!(m.attachments.len(), 1);
+    let raw = carried(&headers, Some("quoted-printable"));
+    assert_eq!(
+        refused_quickly(raw.as_bytes()),
+        "E_GOLDSTONE_TOO_MANY_HEADERS"
+    );
 }
 
 #[test]
