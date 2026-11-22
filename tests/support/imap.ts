@@ -5,7 +5,8 @@
  *
  * GOLDSTONE_IMAP_TEST_HOST (default 127.0.0.1), GOLDSTONE_IMAP_TEST_PORT
  * (IMAPS, e.g. 3993) and GOLDSTONE_SMTP_TEST_PORT (e.g. 3025). Without a
- * port, the suites that need a server are skipped, not failed.
+ * port, the suites that need a server are skipped — locally only: on CI the
+ * import fails instead.
  */
 
 import { connect, createServer, type Server, type Socket } from "node:net";
@@ -14,6 +15,14 @@ export const imapHost = process.env.GOLDSTONE_IMAP_TEST_HOST ?? "127.0.0.1";
 export const imapPort = Number(process.env.GOLDSTONE_IMAP_TEST_PORT ?? 0);
 export const smtpPort = Number(process.env.GOLDSTONE_SMTP_TEST_PORT ?? 0);
 export const serverAvailable = imapPort > 0 && smtpPort > 0;
+
+if (!serverAvailable && process.env.CI === "true") {
+	// CI always starts GreenMail: missing ports there mean the IMAP suites
+	// would skip in silence, which is how a broken job looks green.
+	throw new Error(
+		"GOLDSTONE_IMAP_TEST_PORT / GOLDSTONE_SMTP_TEST_PORT are not set on CI: refusing to skip the IMAP suites.",
+	);
+}
 
 /** Send one mail through the test server's SMTP port. */
 export function sendMail(

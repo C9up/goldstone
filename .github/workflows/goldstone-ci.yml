@@ -164,7 +164,7 @@ jobs:
             echo "::error::0 tests ran — test discovery is broken (check vitest include glob)"
             exit 1
           fi
-          skipped=$(jq '[.testResults[].assertionResults[] | select(.status=="skipped")] | length' test-results.json)
+          skipped=$(jq '[.testResults[].assertionResults[] | select(.status != "passed" and .status != "failed")] | length' test-results.json)
           if [ "$skipped" -ne 0 ]; then
             echo "::error::$skipped tests skipped — check NAPI binary load path"
             exit 1
@@ -215,11 +215,11 @@ jobs:
     name: TypeScript (vitest, linux-x64-gnu)
     runs-on: ubuntu-latest
     # The IMAP test server: IMAPS on 3993, SMTP on 3025 to drop mail in, one
-    # user per suite. Without it the IMAP suites skip and the coverage floor
-    # fails, which is the point.
+    # user per suite. Without it the IMAP suites refuse to load on CI, and the
+    # gate after the tests refuses any test that did not run.
     services:
       greenmail:
-        image: greenmail/standalone:2.1.14
+        image: greenmail/standalone:2.1.14@sha256:1ef95a966418cd09b7ea91d504d8c0826bbe7a2f6e679a75c601a831587c1626
         ports: ['3025:3025', '3993:3993']
         env:
           GREENMAIL_OPTS: >-
@@ -240,7 +240,29 @@ jobs:
       - run: pnpm build:napi
       # With coverage: the thresholds in vitest.config.ts are only a gate if
       # something runs them.
-      - run: pnpm exec vitest run --coverage
+      - run: pnpm exec vitest run --coverage --reporter=default --reporter=json --outputFile=test-results.json
+      # The live-service suites throw on CI when their service is missing, and
+      # this gate also refuses a run where nothing ran or anything did not run
+      # (skipped, todo, pending): a quietly skipped suite tests nothing.
+      - name: Gate — tests ran AND none skipped
+        if: always()
+        run: |
+          if [ ! -f test-results.json ]; then
+            echo "::error::test-results.json not produced — vitest failed before writing"
+            exit 1
+          fi
+          total=$(jq '[.testResults[].assertionResults[]] | length' test-results.json)
+          if [ "$total" -eq 0 ]; then
+            echo "::error::0 tests ran — test discovery is broken"
+            exit 1
+          fi
+          skipped=$(jq '[.testResults[].assertionResults[] | select(.status != "passed" and .status != "failed")] | length' test-results.json)
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::$skipped tests did not run — a service or its URL is missing"
+            jq -r '.testResults[] | .name as $f | .assertionResults[] | select(.status != "passed" and .status != "failed") | "\($f): \(.fullName)"' test-results.json
+            exit 1
+          fi
+        shell: bash
 
   # RustSec advisories against Cargo.lock, on every push and before every
   # publish. A lockfile nothing re-audits goes red silently: seven of them
