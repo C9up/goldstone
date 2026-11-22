@@ -327,40 +327,49 @@ describe("parseMessage — structure bounded before parsing", () => {
 		);
 	});
 
-	it("refuses boundaries that never occur before searching the message for each", async () => {
+	it("reads boundaries that never occur in one pass", async () => {
 		// 900 parts declaring a boundary that never comes, in front of 20 MB:
-		// each was searched for up to the end, 8 s of work per call.
-		const parts = Array.from(
-			{ length: 900 },
-			(_, i) =>
-				`--X\r\nContent-Type: multipart/mixed; boundary=never-${i}\r\n\r\nx\r\n`,
-		).join("");
-		const filler = "filler text that holds no delimiter at all\r\n".repeat(
-			(20 * 1024 * 1024) / 44,
-		);
-		const raw = bytes(
-			`${HEAD}Content-Type: multipart/mixed; boundary=X\r\n\r\n${parts}--X\r\n\r\n${filler}--X--\r\n`,
-		);
+		// mail-parser 0.11 searched the rest for each, 8 s of work per call.
+		// A multipart that cannot be opened stays an attachment, so 900 of
+		// them are over the attachments allowed; 90 are read.
+		const raw = (count: number) => {
+			const parts = Array.from(
+				{ length: count },
+				(_, i) =>
+					`--X\r\nContent-Type: multipart/mixed; boundary=never-${i}\r\n\r\nx\r\n`,
+			).join("");
+			const filler = "filler text that holds no delimiter at all\r\n".repeat(
+				(20 * 1024 * 1024) / 44,
+			);
+			return bytes(
+				`${HEAD}Content-Type: multipart/mixed; boundary=X\r\n\r\n${parts}--X\r\n\r\n${filler}--X--\r\n`,
+			);
+		};
+		const refused = raw(900);
 		const calls = [
-			() => parseMessage(raw),
-			() => readMessage(raw, { authenticate: false }),
-			() => readMessage(raw, { authenticate: { timeoutMs: 1 } }),
-			() => authenticate(raw, { timeoutMs: 1 }),
+			() => parseMessage(refused),
+			() => readMessage(refused, { authenticate: false }),
+			() => readMessage(refused, { authenticate: { timeoutMs: 1 } }),
+			() => authenticate(refused, { timeoutMs: 1 }),
 		];
 		for (const call of calls) {
 			const started = performance.now();
-			expect(await codeOf(call)).toBe("E_GOLDSTONE_MISSING_BOUNDARIES");
+			expect(await codeOf(call)).toBe("E_GOLDSTONE_TOO_MANY_ATTACHMENTS");
 			expect(performance.now() - started).toBeLessThan(1_000);
 		}
+		const started = performance.now();
+		const m = await parseMessage(raw(90));
+		expect(m.attachments).toHaveLength(90);
+		expect(performance.now() - started).toBeLessThan(1_000);
 	});
 
-	it("refuses a boundary too long to compare at every dash", async () => {
+	it("reads a long boundary without comparing it at every dash", async () => {
 		const raw = bytes(
 			`${HEAD}Content-Type: multipart/mixed; boundary="${"-".repeat(500_000)}x"\r\n\r\n${"-".repeat(4 * 1024 * 1024)}\r\n`,
 		);
-		expect(await codeOf(() => parseMessage(raw))).toBe(
-			"E_GOLDSTONE_BOUNDARY_TOO_LONG",
-		);
+		const started = performance.now();
+		await parseMessage(raw);
+		expect(performance.now() - started).toBeLessThan(1_000);
 	});
 });
 

@@ -7,15 +7,16 @@
 //! attachment names stripped of anything that could leave the directory they
 //! are saved to.
 //!
-//! The parser underneath (mail-parser) has no limits of its own — it will
-//! happily walk 5 000 nested multiparts or 100 000 parts. Every bound lives
-//! here.
+//! The parser underneath (mail-parser) is told the limits on parts and
+//! nesting; what it does not bound, and every count handed to the
+//! application, is checked here (see structure.rs).
 
 pub mod auth;
 pub mod html;
 mod structure;
 
-use mail_parser::{Address, HeaderName, HeaderValue, MessageParser, MimeHeaders, PartType};
+use mail_parser::{AddressList, HeaderName, HeaderValue, MessagePart, PartKind, PartRole};
+use std::borrow::Cow;
 use std::fmt;
 
 /// Bounds on one message. The defaults suit an inbox, not an archive import.
@@ -83,20 +84,11 @@ pub enum ParseError {
         size: usize,
         max: usize,
     },
-    /// Before parsing: multiparts whose boundary never occurs would have the
-    /// parser search the rest of the message for each of them.
-    MissingBoundaries {
-        scanned: usize,
+    /// Before parsing: more lines that could each start a header field than
+    /// a message of the allowed size may hold (see structure.rs).
+    TooManyFieldLines {
         max: usize,
     },
-    /// A multipart boundary too long to compare at every `--` of a body.
-    BoundaryTooLong {
-        size: usize,
-        max: usize,
-    },
-    /// Before parsing: the parser would read a header block on past the
-    /// line that ends it, beyond what was measured.
-    UnendedHeaders,
     TooManyAttachments {
         count: usize,
         max: usize,
@@ -125,12 +117,10 @@ impl ParseError {
             Self::NotAMessage => "E_GOLDSTONE_NOT_A_MESSAGE",
             Self::TooManyParts { .. } => "E_GOLDSTONE_TOO_MANY_PARTS",
             Self::TooDeep { .. } => "E_GOLDSTONE_TOO_DEEP",
-            Self::TooManyHeaders { .. } | Self::TooManyHeaderFields { .. } => {
-                "E_GOLDSTONE_TOO_MANY_HEADERS"
-            }
-            Self::HeadersTooLarge { .. } | Self::UnendedHeaders => "E_GOLDSTONE_HEADERS_TOO_LARGE",
-            Self::MissingBoundaries { .. } => "E_GOLDSTONE_MISSING_BOUNDARIES",
-            Self::BoundaryTooLong { .. } => "E_GOLDSTONE_BOUNDARY_TOO_LONG",
+            Self::TooManyHeaders { .. }
+            | Self::TooManyHeaderFields { .. }
+            | Self::TooManyFieldLines { .. } => "E_GOLDSTONE_TOO_MANY_HEADERS",
+            Self::HeadersTooLarge { .. } => "E_GOLDSTONE_HEADERS_TOO_LARGE",
             Self::TooManyAttachments { .. } => "E_GOLDSTONE_TOO_MANY_ATTACHMENTS",
             Self::AttachmentTooLarge { .. } => "E_GOLDSTONE_ATTACHMENT_TOO_LARGE",
             Self::HtmlTooLarge { .. } => "E_GOLDSTONE_HTML_TOO_LARGE",
@@ -149,7 +139,7 @@ impl fmt::Display for ParseError {
             Self::NotAMessage => write!(f, "the bytes are not a mail message"),
             Self::TooManyParts { count, max } => write!(
                 f,
-                "the message has {count} MIME parts, over the {max} allowed"
+                "the message has at least {count} MIME parts, over the {max} allowed"
             ),
             Self::TooDeep { depth, max } => write!(
                 f,
@@ -167,17 +157,9 @@ impl fmt::Display for ParseError {
                 f,
                 "a header block is {size} bytes, over the {max} allowed"
             ),
-            Self::MissingBoundaries { scanned, max } => write!(
+            Self::TooManyFieldLines { max } => write!(
                 f,
-                "multipart boundaries that never occur would have the parser scan {scanned} bytes, over the {max} allowed"
-            ),
-            Self::BoundaryTooLong { size, max } => write!(
-                f,
-                "a multipart boundary is {size} bytes, over the {max} allowed"
-            ),
-            Self::UnendedHeaders => write!(
-                f,
-                "a header block does not end at the line of white space that ends it"
+                "the message holds more than {max} lines that could each start a header field"
             ),
             Self::TooManyAttachments { count, max } => write!(
                 f,
@@ -281,17 +263,31 @@ pub fn parse_mail<'x>(
         });
     }
     structure::prescan(raw, limits)?;
-    let message = MessageParser::default()
+    let message = structure::parser(limits)
         .parse(raw)
         .ok_or(ParseError::NotAMessage)?;
-    check_structure(&message, limits)?;
-    if message.attachments.len() > limits.max_attachments {
+    structure::check(&message, limits)?;
+    let attachments = attachment_parts(&message).count();
+    if attachments > limits.max_attachments {
         return Err(ParseError::TooManyAttachments {
-            count: message.attachments.len(),
+            count: attachments,
             max: limits.max_attachments,
         });
     }
     Ok(message)
+}
+
+/// The parts handed out as attachments, in document order: what RFC 8621
+/// calls attachments, and the images, audio and video shown in the body too.
+/// mail-parser 1.0 leaves media shown in both bodies out of its list; they
+/// stay here, because a `cid:` reference in the HTML needs the part it names.
+fn attachment_parts<'m>(
+    message: &'m mail_parser::Message<'_>,
+) -> impl Iterator<Item = MessagePart<'m>> {
+    message
+        .root()
+        .parts()
+        .filter(|part| part.is_attachment() || part.role() == PartRole::MediaBody)
 }
 
 /// What the application gets from a parsed message.
@@ -305,15 +301,17 @@ pub fn message_of(
     limits: &Limits,
     policy: &HtmlPolicy,
 ) -> Result<Message, ParseError> {
-    let mut attachments = Vec::with_capacity(message.attachments.len());
-    for (index, part) in message.attachments().enumerate() {
-        let content = part.contents();
-        if content.len() > limits.max_attachment_bytes {
+    let mut attachments = Vec::new();
+    for (index, part) in attachment_parts(message).enumerate() {
+        // Measured before it is decoded.
+        let size = part.decoded_len();
+        if size > limits.max_attachment_bytes {
             return Err(ParseError::AttachmentTooLarge {
-                size: content.len(),
+                size,
                 max: limits.max_attachment_bytes,
             });
         }
+        let content = part.decoded();
         let original_name = part.attachment_name().map(str::to_owned);
         attachments.push(Attachment {
             file_name: safe_file_name(original_name.as_deref(), index),
@@ -335,14 +333,10 @@ pub fn message_of(
 
     // Only a part that IS html: body_html() would also turn a text part
     // into html, which is not what the sender wrote.
-    let unsanitized_html =
-        message
-            .html_body
-            .iter()
-            .find_map(|id| match &message.parts.get(*id as usize)?.body {
-                PartType::Html(html) => Some(html.to_string()),
-                _ => None,
-            });
+    let unsanitized_html = message.html_body().find_map(|part| match part.kind() {
+        PartKind::Html => part.text().map(Cow::into_owned),
+        _ => None,
+    });
     let (html, html_error) = match unsanitized_html.as_deref() {
         None => (None, None),
         Some(raw) => match html::check(raw, limits.max_html_bytes) {
@@ -351,13 +345,14 @@ pub fn message_of(
         },
     };
 
-    let first = |name: HeaderName<'static>| message.header_values(name).next();
+    let headers = message.headers();
+    let first = |name: HeaderName<'static>| headers.all(name).next().map(|h| h.value());
     let addresses = |name: HeaderName<'static>| mailboxes(first(name).and_then(|v| v.as_address()));
-    let list = |name: HeaderName<'static>| ids(first(name).unwrap_or(&HeaderValue::Empty));
-    let raw = message.raw_message.as_ref();
+    let list = |name: HeaderName<'static>| ids(first(name));
+    let raw = message.raw();
     Ok(Message {
         message_id: first(HeaderName::MessageId)
-            .and_then(|v| v.as_text())
+            .and_then(|v| first_text(&v))
             .map(str::to_owned),
         subject: first(HeaderName::Subject)
             .and_then(|v| v.as_text())
@@ -380,15 +375,15 @@ pub fn message_of(
             .iter()
             .map(|h| {
                 let value = raw
-                    .get(h.offset_start as usize..h.offset_end as usize)
+                    .get(h.offset_start() as usize..h.offset_end() as usize)
                     .unwrap_or_default();
                 (
-                    h.name.as_str().to_owned(),
+                    h.name().as_str().to_owned(),
                     String::from_utf8_lossy(value).trim().to_owned(),
                 )
             })
             .collect(),
-        text: message.body_text(0).map(|t| t.into_owned()),
+        text: message.body_text(0).map(Cow::into_owned),
         html,
         html_error,
         unsanitized_html,
@@ -396,63 +391,10 @@ pub fn message_of(
     })
 }
 
-/// The exact counts, through the parts of every carried message too:
-/// parts, nesting (a carried message is one level), headers per part.
-/// Walked iteratively, so depth costs no stack.
-fn check_structure(message: &mail_parser::Message<'_>, limits: &Limits) -> Result<(), ParseError> {
-    let mut parts = 0usize;
-    let mut messages = vec![(message, 0usize)];
-    while let Some((message, base)) = messages.pop() {
-        parts += message.parts.len();
-        if parts > limits.max_parts {
-            return Err(ParseError::TooManyParts {
-                count: parts,
-                max: limits.max_parts,
-            });
-        }
-        if let Some(part) = message
-            .parts
-            .iter()
-            .find(|p| p.headers.len() > limits.max_headers)
-        {
-            return Err(ParseError::TooManyHeaders {
-                count: part.headers.len(),
-                max: limits.max_headers,
-            });
-        }
-        let mut depth_of = vec![base; message.parts.len()];
-        let mut walk = vec![0usize];
-        while let Some(id) = walk.pop() {
-            let depth = depth_of[id];
-            if depth > limits.max_depth {
-                return Err(ParseError::TooDeep {
-                    depth,
-                    max: limits.max_depth,
-                });
-            }
-            if let Some(PartType::Multipart(children)) = message.parts.get(id).map(|p| &p.body) {
-                // A child always comes after its parent: no cycle to follow.
-                for child in children.iter().map(|c| *c as usize) {
-                    if child > id && child < depth_of.len() {
-                        depth_of[child] = depth + 1;
-                        walk.push(child);
-                    }
-                }
-            }
-        }
-        for (id, part) in message.parts.iter().enumerate() {
-            if let PartType::Message(carried) = &part.body {
-                messages.push((carried, depth_of[id] + 1));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn mailboxes(address: Option<&Address<'_>>) -> Vec<Mailbox> {
+fn mailboxes(address: Option<AddressList<'_>>) -> Vec<Mailbox> {
     match address {
         Some(address) => address
-            .iter()
+            .mailboxes()
             .map(|a| Mailbox {
                 name: a.name().map(str::to_owned),
                 address: a.address().map(str::to_owned),
@@ -462,10 +404,18 @@ fn mailboxes(address: Option<&Address<'_>>) -> Vec<Mailbox> {
     }
 }
 
-fn ids(value: &HeaderValue<'_>) -> Vec<String> {
+/// The first identifier of a field: mail-parser keeps them as a list.
+fn first_text<'m>(value: &HeaderValue<'m>) -> Option<&'m str> {
     match value {
-        HeaderValue::Text(id) => vec![id.to_string()],
-        HeaderValue::TextList(ids) => ids.iter().map(|id| id.to_string()).collect(),
+        HeaderValue::TextList(ids) => ids.first(),
+        other => other.as_text(),
+    }
+}
+
+fn ids(value: Option<HeaderValue<'_>>) -> Vec<String> {
+    match value {
+        Some(HeaderValue::TextList(ids)) => ids.iter().map(str::to_owned).collect(),
+        Some(HeaderValue::Text(id)) => vec![id.to_owned()],
         _ => Vec::new(),
     }
 }

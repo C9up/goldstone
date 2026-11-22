@@ -10,18 +10,19 @@
 //! cap on the DKIM signatures verified (each is a lookup), SPF's own lookup
 //! limit, and a cache so the same key is not fetched for every message.
 
-use mail_auth::common::crypto::Algorithm;
-use mail_auth::common::parse::TxtRecordParser;
-use mail_auth::common::to_a_label;
+use mail_auth::crypto::Algorithm;
+use mail_auth::dkim::{DkimError, DomainKey, Signature};
 use mail_auth::dmarc::verify::DmarcParameters;
-use mail_auth::dmarc::Policy;
+use mail_auth::dmarc::{DmarcRecord, Policy};
+use mail_auth::dns::{ToFqdn, TxtRecordParser};
 use mail_auth::spf::verify::SpfParameters;
+use mail_auth::spf::SpfRecord;
 use mail_auth::{
-    AuthenticatedMessage, DkimResult, DmarcResult, MessageAuthenticator, Parameters, ResolverCache,
-    SpfOutput, SpfResult, Txt,
+    AuthenticatedMessage, DkimResult, DmarcResult, DnsCache, MessageAuthenticator, NoCache,
+    Parameters, ResolverCache, SpfOutput, SpfResult, TxtRecord,
 };
 use mail_parser::HeaderName;
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::net::IpAddr;
@@ -144,7 +145,7 @@ impl Verdict {
 /// everything if that is not enough. Shared by every check.
 pub struct TxtCache {
     capacity: usize,
-    entries: Mutex<HashMap<Box<str>, (Txt, Instant)>>,
+    entries: Mutex<HashMap<Box<str>, (TxtRecord, Instant)>>,
 }
 
 impl TxtCache {
@@ -155,14 +156,15 @@ impl TxtCache {
         }
     }
 
-    /// Put a record in by hand — for tests, where there is no DNS.
-    pub fn insert_record(&self, name: &str, record: Txt, ttl: Duration) {
-        self.insert(name.into(), record, Instant::now() + ttl);
+    /// Put a record in by hand — for tests, where there is no DNS. The name
+    /// is stored the way lookups ask for it: lowercase, with the final dot.
+    pub fn insert_record(&self, name: &str, record: TxtRecord, ttl: Duration) {
+        self.insert(name.to_fqdn().into(), record, Instant::now() + ttl);
     }
 }
 
-impl ResolverCache<Box<str>, Txt> for TxtCache {
-    fn get<Q>(&self, name: &Q) -> Option<Txt>
+impl ResolverCache<Box<str>, TxtRecord> for TxtCache {
+    fn get<Q>(&self, name: &Q) -> Option<TxtRecord>
     where
         Box<str>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -172,7 +174,7 @@ impl ResolverCache<Box<str>, Txt> for TxtCache {
         (Instant::now() < *valid_until).then(|| value.clone())
     }
 
-    fn remove<Q>(&self, name: &Q) -> Option<Txt>
+    fn remove<Q>(&self, name: &Q) -> Option<TxtRecord>
     where
         Box<str>: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -184,7 +186,7 @@ impl ResolverCache<Box<str>, Txt> for TxtCache {
             .map(|(value, _)| value)
     }
 
-    fn insert(&self, key: Box<str>, value: Txt, valid_until: Instant) {
+    fn insert(&self, key: Box<str>, value: TxtRecord, valid_until: Instant) {
         let Ok(mut entries) = self.entries.lock() else {
             return;
         };
@@ -199,23 +201,53 @@ impl ResolverCache<Box<str>, Txt> for TxtCache {
     }
 }
 
+/// The TXT cache is the one kept: the other record types (A, MX, PTR, which
+/// SPF mechanisms look up) go to the resolver, as before.
+impl DnsCache for TxtCache {
+    type Txt = TxtCache;
+    type Mx = NoCache;
+    type Ipv4 = NoCache;
+    type Ipv6 = NoCache;
+    type Ptr = NoCache;
+
+    fn txt(&self) -> Option<&TxtCache> {
+        Some(self)
+    }
+
+    fn mx(&self) -> Option<&NoCache> {
+        None
+    }
+
+    fn ipv4(&self) -> Option<&NoCache> {
+        None
+    }
+
+    fn ipv6(&self) -> Option<&NoCache> {
+        None
+    }
+
+    fn ptr(&self) -> Option<&NoCache> {
+        None
+    }
+}
+
 /// Parse a TXT record the way the resolver would — for tests.
-pub fn dkim_key_record(text: &str) -> Txt {
-    Txt::from(mail_auth::common::verify::DomainKey::parse(text.as_bytes()))
+pub fn dkim_key_record(text: &str) -> TxtRecord {
+    TxtRecord::from(DomainKey::parse(text.as_bytes()))
 }
 
-pub fn spf_record(text: &str) -> Txt {
-    Txt::from(mail_auth::spf::Spf::parse(text.as_bytes()))
+pub fn spf_record(text: &str) -> TxtRecord {
+    TxtRecord::from(SpfRecord::parse(text.as_bytes()))
 }
 
-pub fn dmarc_record(text: &str) -> Txt {
-    Txt::from(mail_auth::dmarc::Dmarc::parse(text.as_bytes()))
+pub fn dmarc_record(text: &str) -> TxtRecord {
+    TxtRecord::from(DmarcRecord::parse(text.as_bytes()))
 }
 
 /// A name that does not exist (NXDOMAIN), as the resolver would cache it —
 /// for tests, where a missing name would otherwise be a DNS failure.
-pub fn not_found_record() -> Txt {
-    Txt::Error(mail_auth::Error::Dns(mail_auth::DnsError::RecordNotFound(
+pub fn not_found_record() -> TxtRecord {
+    TxtRecord::Error(mail_auth::Error::Dns(mail_auth::DnsError::RecordNotFound(
         mail_auth::hickory_resolver::proto::op::ResponseCode::NXDomain,
     )))
 }
@@ -258,46 +290,74 @@ pub async fn authenticate_parsed(
     authenticator: &MessageAuthenticator,
     cache: &TxtCache,
 ) -> Verdict {
-    let mut message = AuthenticatedMessage::from_parsed(parsed, parsed.raw_message.as_ref(), true);
-    // Refused first: they cost no lookup, so they do not count against the
-    // signatures verified.
-    let refused = refuse_unsafe_signatures(&mut message);
-    message.dkim_headers.truncate(options.max_dkim_signatures);
-    let checks = run(&message, refused, options, authenticator, cache);
+    let mut message = AuthenticatedMessage::from_parsed(parsed, parsed.raw(), true);
+    let screened = screen_signatures(&mut message, options.max_dkim_signatures);
+    let checks = run(&message, screened, options, authenticator, cache);
     let verdict = tokio::time::timeout(options.timeout, checks)
         .await
         .unwrap_or_else(|_| Verdict::temperror());
     bind(verdict, from_domain(parsed))
 }
 
-/// Signatures a verifier must not accept, whatever their cryptography says,
-/// taken out before DKIM runs so DMARC cannot align on them either.
-/// mail-auth verifies both kinds; RFC 8301 3.1 forbids the first, RFC 6376
-/// 6.1.1 the second (a From left out of `h=` can be rewritten freely).
-fn refuse_unsafe_signatures(message: &mut AuthenticatedMessage<'_>) -> Vec<DkimVerdict> {
+/// Why a verifier must not accept a signature, whatever its cryptography
+/// says. mail-auth verifies both kinds; RFC 8301 3.1 forbids the first, RFC
+/// 6376 6.1.1 the second (a From left out of `h=` can be rewritten freely).
+fn unsafe_reason(signature: &Signature) -> Option<&'static str> {
+    if signature.a == Algorithm::RsaSha1 {
+        Some("rsa-sha1 is not accepted (RFC 8301)")
+    } else if !signature
+        .h
+        .iter()
+        .any(|h| h.trim().eq_ignore_ascii_case("from"))
+    {
+        Some("the signature does not cover From (RFC 6376 6.1.1)")
+    } else {
+        None
+    }
+}
+
+/// The signatures taken out before DKIM runs, so DMARC cannot align on
+/// them either.
+struct Screened {
+    /// The unsafe ones, reported as `permerror` with their reason.
+    refused: Vec<DkimVerdict>,
+    /// Where mail-auth puts the outputs of everything taken out: it reports
+    /// each as `neutral` after the outputs of the signatures it could not
+    /// parse, and before the ones it verified. Those are dropped from the
+    /// verdict, `refused` stands for them.
+    taken_out: std::ops::Range<usize>,
+}
+
+/// Unsafe signatures out first: they cost no lookup, so they do not count
+/// against the `max` verified. Past `max`, the rest are ignored.
+fn screen_signatures(message: &mut AuthenticatedMessage<'_>, max: usize) -> Screened {
+    let unparsed = message
+        .errors()
+        .iter()
+        .filter(|header| matches!(header.header, mail_auth::Error::Dkim(_)))
+        .count();
     let mut refused = Vec::new();
-    message.dkim_headers.retain(|header| {
-        let signature = &header.header;
-        let reason = if signature.a == Algorithm::RsaSha1 {
-            "rsa-sha1 is not accepted (RFC 8301)"
-        } else if !signature
-            .h
-            .iter()
-            .any(|h| h.trim().eq_ignore_ascii_case("from"))
-        {
-            "the signature does not cover From (RFC 6376 6.1.1)"
-        } else {
-            return true;
-        };
-        refused.push(DkimVerdict {
-            result: Outcome::PermError,
-            domain: Some(signature.d.clone()),
-            selector: Some(signature.s.clone()),
-            reason: Some(reason.into()),
-        });
-        false
+    let mut kept = 0usize;
+    let mut taken_out = 0usize;
+    message.retain_dkim_signatures(|signature| {
+        if let Some(reason) = unsafe_reason(signature) {
+            refused.push(DkimVerdict {
+                result: Outcome::PermError,
+                domain: Some(signature.d.clone()),
+                selector: Some(signature.s.clone()),
+                reason: Some(reason.into()),
+            });
+        } else if kept < max {
+            kept += 1;
+            return Ok(());
+        }
+        taken_out += 1;
+        Err(DkimError::UnsupportedAlgorithm)
     });
-    refused
+    Screened {
+        refused,
+        taken_out: unparsed..unparsed + taken_out,
+    }
 }
 
 /// Headers RFC 5322 3.6 (and MIME) allow once. A second copy is how an
@@ -336,17 +396,17 @@ pub fn from_domain(parsed: &mail_parser::Message<'_>) -> FromDomain {
     let headers = parsed.root_part().headers();
     if SINGLE
         .iter()
-        .any(|name| headers.iter().filter(|h| &h.name == name).take(2).count() > 1)
+        .any(|name| headers.all(name.clone()).take(2).count() > 1)
     {
         return FromDomain::Ambiguous;
     }
-    let Some(from) = parsed.header_values(HeaderName::From).next() else {
+    let Some(from) = headers.all(HeaderName::From).next() else {
         return FromDomain::Missing;
     };
-    let Some(address) = from.as_address() else {
+    let Some(address) = from.value().as_address() else {
         return FromDomain::Missing;
     };
-    let mut mailboxes = address.iter();
+    let mut mailboxes = address.mailboxes();
     let (Some(only), None) = (mailboxes.next(), mailboxes.next()) else {
         return FromDomain::Ambiguous;
     };
@@ -355,6 +415,21 @@ pub fn from_domain(parsed: &mail_parser::Message<'_>) -> FromDomain {
             FromDomain::One(to_a_label(domain).to_ascii_lowercase())
         }
         _ => FromDomain::Missing,
+    }
+}
+
+/// A domain in the form DMARC compares it: mail-auth's own conversion
+/// (`dns::to_a_label`, private there), so the domain bound to the verdict and
+/// the one DMARC evaluated are spelled alike.
+fn to_a_label(domain: &str) -> Cow<'_, str> {
+    if !domain.is_ascii() {
+        idna::domain_to_ascii(domain)
+            .map(Cow::Owned)
+            .unwrap_or(Cow::Borrowed(domain))
+    } else if domain.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        Cow::Owned(domain.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(domain)
     }
 }
 
@@ -381,16 +456,16 @@ fn bind(mut verdict: Verdict, from: FromDomain) -> Verdict {
 
 async fn run(
     message: &AuthenticatedMessage<'_>,
-    refused: Vec<DkimVerdict>,
+    screened: Screened,
     options: &AuthOptions,
     authenticator: &MessageAuthenticator,
     cache: &TxtCache,
 ) -> Verdict {
     let dkim_output = authenticator
-        .verify_dkim(Parameters::new(message).with_txt_cache(cache))
+        .verify_dkim(Parameters::new(message).with_cache(cache))
         .await;
     let arc_output = authenticator
-        .verify_arc(Parameters::new(message).with_txt_cache(cache))
+        .verify_arc(Parameters::new(message).with_cache(cache))
         .await;
 
     let envelope = &options.envelope;
@@ -399,13 +474,13 @@ async fn run(
         (Some(ip), Some(helo)) if !mail_from.is_empty() => {
             authenticator
                 .verify_spf(
-                    Parameters::new(SpfParameters::verify_mail_from(
+                    Parameters::new(SpfParameters::mail_from(
                         ip,
                         helo,
                         &options.receiver,
                         mail_from,
                     ))
-                    .with_txt_cache(cache),
+                    .with_cache(cache),
                 )
                 .await
         }
@@ -420,13 +495,19 @@ async fn run(
                 mail_from_domain,
                 &spf_output,
             ))
-            .with_txt_cache(cache),
+            .with_cache(cache),
         )
         .await;
 
+    let Screened { refused, taken_out } = screened;
+    let verified = dkim_output
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !taken_out.contains(index))
+        .map(|(_, output)| output);
     let dkim: Vec<DkimVerdict> = refused
         .into_iter()
-        .chain(dkim_output.iter().map(|output| DkimVerdict {
+        .chain(verified.map(|output| DkimVerdict {
             result: dkim_outcome(output.result()),
             domain: output.signature().map(|s| s.d.clone()),
             selector: output.signature().map(|s| s.s.clone()),

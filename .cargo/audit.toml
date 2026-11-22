@@ -7,11 +7,14 @@
 
 [advisories]
 ignore = [
-  # RUSTSEC-2023-0071: rsa, the Marvin attack, a timing side channel in the
-  # PRIVATE-key operation, through mail-auth. goldstone only verifies DKIM/ARC
-  # signatures, a public-key operation; the signing feature is a
-  # dev-dependency of the tests.
-  # DROP WHEN an rsa release ships the constant-time rewrite (none exists in
-  # any line today), or when mail-auth stops depending on rsa.
+  # RUSTSEC-2023-0071: rsa 0.9, the Marvin attack, a timing side channel in
+  # the PRIVATE-key operation (decryption, signing). It ships in the binary
+  # through mail-auth's rust-crypto backend (mail-auth 0.14 dropped ring), and
+  # goldstone only verifies DKIM/ARC signatures with it, a public-key
+  # operation the attack does not reach; signing happens in the tests alone.
+  # rsa 0.10 has the constant-time rewrite, but mail-auth 0.15.1 requires
+  # rsa ^0.9.8.
+  # DROP WHEN mail-auth moves to rsa 0.10, or when goldstone stops depending
+  # on rsa.
   "RUSTSEC-2023-0071",
 ]

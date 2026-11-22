@@ -5,10 +5,10 @@ use goldstone_engine::auth::{
     authenticate, dkim_key_record, dmarc_record, not_found_record, spf_record, AuthOptions,
     Envelope, Outcome, TxtCache, Verdict,
 };
-use mail_auth::common::crypto::Ed25519Key;
-use mail_auth::common::headers::HeaderWriter;
+use mail_auth::crypto::Ed25519Key;
 use mail_auth::dkim::generate::DkimKeyPair;
 use mail_auth::dkim::DkimSigner;
+use mail_auth::headers::HeaderWriter;
 use mail_auth::hickory_resolver::config::{NameServerConfig, ResolverConfig, ResolverOpts};
 use mail_auth::MessageAuthenticator;
 use std::time::Duration;
@@ -263,9 +263,11 @@ async fn refused_signatures_do_not_take_the_place_of_a_valid_one() {
 async fn the_parse_leaves_the_async_workers_free() {
     // One async worker: a parse run on it would stall every other task (the
     // DNS checks of other messages, with their deadline running) until done.
+    // mail-parser 1.0 reads 20 MB of text in about 15 ms: 100 MB, so the
+    // parse is long enough to be told from the ticker's own jitter.
     let raw = format!(
         "From: a@b.test\r\nContent-Type: text/plain\r\n\r\n{}",
-        "a line of text, nothing more\r\n".repeat(700_000)
+        "a line of text, nothing more\r\n".repeat(3_500_000)
     );
     let ticks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let ticker = {
@@ -284,6 +286,7 @@ async fn the_parse_leaves_the_async_workers_free() {
         let cache = TxtCache::new(4);
         let options = AuthOptions {
             timeout: Duration::from_millis(1),
+            max_bytes: 128 * 1024 * 1024,
             ..AuthOptions::default()
         };
         let started = std::time::Instant::now();
@@ -300,8 +303,10 @@ async fn the_parse_leaves_the_async_workers_free() {
         .map(|w| w[1] - w[0])
         .max()
         .unwrap_or_default();
+    // The ticker wakes every 5 ms: a parse of 30 ms on the worker would leave
+    // a gap as long as the parse, one off it gaps of about 5 ms.
     assert!(
-        took > Duration::from_millis(60),
+        took > Duration::from_millis(30),
         "the parse should take a while: {took:?}"
     );
     assert!(
