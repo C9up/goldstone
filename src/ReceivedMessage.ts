@@ -13,13 +13,18 @@
  * application.
  */
 
+import { Exception } from "@c9up/flare";
 import {
 	type AuthenticateOptions,
 	type Authenticity,
 	fromNative,
 	nativeOptions,
 } from "./authenticity.js";
-import { fromEngine, GoldstoneError } from "./errors.js";
+import { fromEngine } from "./engineErrors.js";
+import {
+	E_GOLDSTONE_INVALID_LIMITS,
+	E_GOLDSTONE_INVALID_OPTIONS,
+} from "./errors.js";
 import type { JsHtmlOptions, JsLimits, JsMessage } from "./native/generated.js";
 import { engine, snapshot } from "./native.js";
 
@@ -103,7 +108,7 @@ export class ReceivedMessage {
 	 * (`…_HTML_TOO_COMPLEX`). Sanitizing such HTML would cost time that grows
 	 * faster than its size; the text and the rest of the message are there.
 	 */
-	readonly htmlError?: GoldstoneError;
+	readonly htmlError?: Exception;
 	readonly attachments: readonly Attachment[];
 	/**
 	 * Who really sent it — present when the message was read with
@@ -180,10 +185,7 @@ function nativeLimits(limits: Limits | undefined): JsLimits | undefined {
 			value !== undefined &&
 			!(Number.isInteger(value) && value > 0 && value <= 0xffff_ffff)
 		) {
-			throw new GoldstoneError(
-				"E_GOLDSTONE_INVALID_LIMITS",
-				`Goldstone: ${key} must be a positive integer under 2^32, got ${String(value)}`,
-			);
+			throw new E_GOLDSTONE_INVALID_LIMITS([key, String(value)]);
 		}
 	}
 	return { ...limits };
@@ -209,10 +211,9 @@ function htmlOptions(options: ParseOptions): JsHtmlOptions {
 		remoteContent !== "block" &&
 		remoteContent !== "allow"
 	) {
-		throw new GoldstoneError(
-			"E_GOLDSTONE_INVALID_OPTIONS",
+		throw new E_GOLDSTONE_INVALID_OPTIONS([
 			`Goldstone: remoteContent must be "block" or "allow", got ${String(remoteContent)}`,
-		);
+		]);
 	}
 	return { remoteContent: remoteContent === "allow" };
 }
@@ -221,7 +222,7 @@ function htmlOptions(options: ParseOptions): JsHtmlOptions {
  * Parse one received message — raw RFC 5322 bytes, as IMAP fetches them or
  * a provider posts them. The work runs off the event loop.
  *
- * Rejects with a `GoldstoneError` on a message over a limit
+ * Rejects with a coded error (`E_GOLDSTONE_*`) on a message over a limit
  * (`E_GOLDSTONE_MESSAGE_TOO_LARGE`, `…_TOO_MANY_PARTS`, `…_TOO_DEEP`,
  * `…_TOO_MANY_HEADERS`, `…_HEADERS_TOO_LARGE`, `…_MISSING_BOUNDARIES`,
  * `…_BOUNDARY_TOO_LONG`, `…_TOO_MANY_ATTACHMENTS`, `…_ATTACHMENT_TOO_LARGE`) or not a message at
@@ -244,7 +245,7 @@ async function parseNative(
 	try {
 		return await engine().parseMessage(bytes, bounds, html);
 	} catch (error) {
-		if (error instanceof GoldstoneError) throw error;
+		if (error instanceof Exception) throw error;
 		throw fromEngine(error);
 	}
 }
@@ -281,7 +282,7 @@ export async function readMessage(
 		const read = await engine().readMessage(bytes, bounds, authOptions, html);
 		return new ReceivedMessage(read.message, fromNative(read.authenticity));
 	} catch (error) {
-		if (error instanceof GoldstoneError) throw error;
+		if (error instanceof Exception) throw error;
 		throw fromEngine(error);
 	}
 }

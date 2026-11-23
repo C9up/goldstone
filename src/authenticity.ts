@@ -19,7 +19,9 @@
  * `"ceo@bank.test" <a@evil.test>` can pass, for `evil.test`.
  */
 
-import { fromEngine, GoldstoneError } from "./errors.js";
+import { Exception } from "@c9up/flare";
+import { fromEngine } from "./engineErrors.js";
+import { E_GOLDSTONE_INVALID_OPTIONS } from "./errors.js";
 import type { JsAuthOptions, JsVerdict } from "./native/generated.js";
 import { engine, snapshot } from "./native.js";
 
@@ -158,10 +160,9 @@ export function nativeOptions(
 			value !== undefined &&
 			!(Number.isInteger(value) && value > 0 && value <= 0xffff_ffff)
 		) {
-			throw new GoldstoneError(
-				"E_GOLDSTONE_INVALID_OPTIONS",
+			throw new E_GOLDSTONE_INVALID_OPTIONS([
 				`Goldstone: ${key} must be a positive integer under 2^32, got ${String(value)}`,
-			);
+			]);
 		}
 	}
 	return { ...options };
@@ -177,7 +178,7 @@ export async function authenticate(
 	try {
 		return fromNative(await engine().authenticateMessage(bytes, bounds));
 	} catch (error) {
-		if (error instanceof GoldstoneError) throw error;
+		if (error instanceof Exception) throw error;
 		throw fromEngine(error);
 	}
 }

@@ -1,10 +1,6 @@
+import { Exception } from "@c9up/flare";
 import { describe, expect, it } from "vitest";
-import {
-	authenticate,
-	GoldstoneError,
-	parseMessage,
-	readMessage,
-} from "../src/index.js";
+import { authenticate, parseMessage, readMessage } from "../src/index.js";
 
 const bytes = (text: string) => new TextEncoder().encode(text);
 
@@ -24,9 +20,7 @@ async function codeOf(
 	try {
 		await run();
 	} catch (error) {
-		return error instanceof GoldstoneError
-			? error.code
-			: "not a GoldstoneError";
+		return error instanceof Exception ? error.code : "not an Exception";
 	}
 	return undefined;
 }

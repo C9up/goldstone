@@ -16,7 +16,10 @@
  *   })
  */
 
-import { GoldstoneError } from "./errors.js";
+import {
+	E_GOLDSTONE_INSECURE_CONNECTION,
+	E_GOLDSTONE_INVALID_CONFIG,
+} from "./errors.js";
 import type { Limits, ParseOptions } from "./ReceivedMessage.js";
 
 export interface PasswordAuth {
@@ -92,16 +95,14 @@ export function defineConfig<Mailboxes extends Record<string, MailboxConfig>>(
 ): InboxConfig<Mailboxes> {
 	const names = Object.keys(config.mailboxes);
 	if (names.length === 0) {
-		throw new GoldstoneError(
-			"E_GOLDSTONE_INVALID_CONFIG",
+		throw new E_GOLDSTONE_INVALID_CONFIG([
 			"[inbox] config declares no mailbox",
-		);
+		]);
 	}
 	if (!names.includes(config.mailbox)) {
-		throw new GoldstoneError(
-			"E_GOLDSTONE_INVALID_CONFIG",
+		throw new E_GOLDSTONE_INVALID_CONFIG([
 			`[inbox] default mailbox "${config.mailbox}" is not declared — got ${names.join(", ")}`,
-		);
+		]);
 	}
 	for (const [name, mailbox] of Object.entries(config.mailboxes)) {
 		assertSecure(name, mailbox);
@@ -111,22 +112,19 @@ export function defineConfig<Mailboxes extends Record<string, MailboxConfig>>(
 
 export function assertSecure(name: string, mailbox: MailboxConfig): void {
 	if (mailbox.secure === true && mailbox.starttls === true) {
-		throw new GoldstoneError(
-			"E_GOLDSTONE_INVALID_CONFIG",
+		throw new E_GOLDSTONE_INVALID_CONFIG([
 			`[inbox] mailbox "${name}" asks for TLS from the first byte and for STARTTLS — keep one: starttls: true alone upgrades a plaintext connection`,
-		);
+		]);
 	}
 	if (mailbox.allowInsecure === true) return;
 	if (mailbox.secure === false && mailbox.starttls !== true) {
-		throw new GoldstoneError(
-			"E_GOLDSTONE_INSECURE_CONNECTION",
+		throw new E_GOLDSTONE_INSECURE_CONNECTION([
 			`[inbox] mailbox "${name}" would connect without TLS — set starttls: true, or allowInsecure for a local test server`,
-		);
+		]);
 	}
 	if (mailbox.tls?.rejectUnauthorized === false) {
-		throw new GoldstoneError(
-			"E_GOLDSTONE_INSECURE_CONNECTION",
+		throw new E_GOLDSTONE_INSECURE_CONNECTION([
 			`[inbox] mailbox "${name}" would not check the server's certificate — give its CA in tls.ca, or allowInsecure for a local test server`,
-		);
+		]);
 	}
 }

@@ -11,6 +11,10 @@
 
 import "./augmentations.js";
 import type { InboxConfig, MailboxConfig } from "./config.js";
+import {
+	E_GOLDSTONE_INVALID_CONFIG,
+	E_GOLDSTONE_MISSING_CONFIG,
+} from "./errors.js";
 import { InboxManager } from "./InboxManager.js";
 import { clearInbox, setInbox } from "./services/main.js";
 
@@ -47,11 +51,13 @@ export default class GoldstoneProvider {
 
 	register(): void {
 		const raw = this.#app.config.get("inbox");
-		if (raw === undefined) throw new Error("[inbox] missing config/inbox.ts");
+		if (raw === undefined) {
+			throw new E_GOLDSTONE_MISSING_CONFIG();
+		}
 		if (!isInboxConfig(raw)) {
-			throw new Error(
+			throw new E_GOLDSTONE_INVALID_CONFIG([
 				"[inbox] config/inbox.ts must export defineConfig({ mailbox, mailboxes }).",
-			);
+			]);
 		}
 		const manager = new InboxManager(raw);
 		this.#manager = manager;

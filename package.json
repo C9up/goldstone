@@ -32,6 +32,7 @@
     "prepublishOnly": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
+    "@c9up/flare": "^0.1.0",
     "imapflow": "^2.4.2"
   },
   "devDependencies": {

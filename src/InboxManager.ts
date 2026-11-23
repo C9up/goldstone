@@ -6,7 +6,7 @@
  */
 
 import type { InboxConfig, MailboxConfig } from "./config.js";
-import { GoldstoneError } from "./errors.js";
+import { E_GOLDSTONE_UNKNOWN_MAILBOX } from "./errors.js";
 import { Mailbox } from "./Mailbox.js";
 
 export class InboxManager<
@@ -28,10 +28,10 @@ export class InboxManager<
 		if (existing) return existing;
 		const config = this.#config.mailboxes[name];
 		if (config === undefined) {
-			throw new GoldstoneError(
-				"E_GOLDSTONE_UNKNOWN_MAILBOX",
-				`[inbox] no mailbox "${name}" — got ${Object.keys(this.#config.mailboxes).join(", ")}`,
-			);
+			throw new E_GOLDSTONE_UNKNOWN_MAILBOX([
+				name,
+				Object.keys(this.#config.mailboxes).join(", "),
+			]);
 		}
 		const mailbox = new Mailbox(name, config, {
 			limits: this.#config.limits,

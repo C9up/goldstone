@@ -1,8 +1,9 @@
+import { Exception } from "@c9up/flare";
 import { describe, expect, it } from "vitest";
 import {
 	authenticate,
+	errors,
 	fromEngine,
-	GoldstoneError,
 	isNativeAvailable,
 	parseMessage,
 	readMessage,
@@ -28,9 +29,7 @@ async function codeOf(
 	try {
 		await run();
 	} catch (error) {
-		return error instanceof GoldstoneError
-			? error.code
-			: "not a GoldstoneError";
+		return error instanceof Exception ? error.code : "not an Exception";
 	}
 	return undefined;
 }
@@ -202,8 +201,7 @@ describe("parseMessage — limits", () => {
 		}
 		const outcome = await parseMessage(random).then(
 			() => "parsed",
-			(error: unknown) =>
-				error instanceof GoldstoneError ? "refused" : "crashed",
+			(error: unknown) => (error instanceof Exception ? "refused" : "crashed"),
 		);
 		expect(outcome).not.toBe("crashed");
 	});
@@ -389,5 +387,24 @@ describe("parseMessage — remote content", () => {
 				}),
 			),
 		).toBe("E_GOLDSTONE_INVALID_OPTIONS");
+	});
+});
+
+describe("errors", () => {
+	it("the entry exports every error as one `errors` namespace", () => {
+		const error = new errors.E_GOLDSTONE_UNKNOWN_MAILBOX(["archive", "main"]);
+		expect(error).toBeInstanceOf(Exception);
+		expect(error).toBeInstanceOf(errors.E_GOLDSTONE_UNKNOWN_MAILBOX);
+		expect(error.code).toBe("E_GOLDSTONE_UNKNOWN_MAILBOX");
+		expect(error.status).toBe(500);
+		expect(error.message).toBe('[inbox] no mailbox "archive" — got main');
+	});
+
+	it("a refused message answers 422, and the engine's code maps to its class", () => {
+		const native = new Error("E_GOLDSTONE_TOO_DEEP: nests 40");
+		const error = fromEngine(native);
+		expect(error).toBeInstanceOf(errors.E_GOLDSTONE_TOO_DEEP);
+		expect(error.status).toBe(422);
+		expect(error.cause).toBe(native);
 	});
 });

@@ -47,6 +47,12 @@ describe("GoldstoneProvider", () => {
 		expect(() => boot({ mailboxes: {} }).provider.register()).toThrow(
 			/must export defineConfig/,
 		);
+		expect(() => boot(undefined).provider.register()).toThrow(
+			expect.objectContaining({ code: "E_GOLDSTONE_MISSING_CONFIG" }),
+		);
+		expect(() => boot({ mailboxes: {} }).provider.register()).toThrow(
+			expect.objectContaining({ code: "E_GOLDSTONE_INVALID_CONFIG" }),
+		);
 	});
 });
 
@@ -55,6 +61,9 @@ describe("services/main", () => {
 		expect(Reflect.get(inbox, "then")).toBeUndefined();
 		expect(() => inbox.mailbox()).toThrow(
 			"[inbox] accessed before initialization",
+		);
+		expect(() => inbox.mailbox()).toThrow(
+			expect.objectContaining({ code: "E_GOLDSTONE_NOT_BOOTED" }),
 		);
 	});
 });

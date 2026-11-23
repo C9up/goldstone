@@ -11,6 +11,7 @@
  * provider.
  */
 
+import { E_GOLDSTONE_NOT_BOOTED } from "../errors.js";
 import type { InboxManager } from "../InboxManager.js";
 
 let instance: InboxManager | undefined;
@@ -39,9 +40,7 @@ const inbox: InboxManager = new Proxy(Object.create(null), {
 			return undefined;
 		}
 		if (!instance) {
-			throw new Error(
-				"[inbox] accessed before initialization — register GoldstoneProvider, or call setInbox() yourself.",
-			);
+			throw new E_GOLDSTONE_NOT_BOOTED();
 		}
 		const value = Reflect.get(instance, property, instance);
 		return typeof value === "function" ? value.bind(instance) : value;

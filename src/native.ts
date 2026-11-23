@@ -6,7 +6,7 @@
  * binary is a hard failure with an actionable message.
  */
 
-import { GoldstoneNativeRequiredError } from "./errors.js";
+import { E_GOLDSTONE_NATIVE_REQUIRED } from "./errors.js";
 import {
 	hasFunctions,
 	loadNativeBinary,
@@ -52,11 +52,11 @@ export function snapshot(raw: Uint8Array): Buffer {
 /** The engine, or a refusal explaining how to get one. */
 export function engine(): NativeGoldstone {
 	if (native === undefined) {
-		throw new GoldstoneNativeRequiredError(
+		throw new E_GOLDSTONE_NATIVE_REQUIRED([
 			loadError === undefined
 				? vendorUnavailableReason()
 				: `failed to load (${loadError instanceof Error ? loadError.message : String(loadError)})`,
-		);
+		]);
 	}
 	return native;
 }

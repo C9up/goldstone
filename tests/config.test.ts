@@ -1,7 +1,7 @@
+import { Exception } from "@c9up/flare";
 import { describe, expect, it } from "vitest";
 import {
 	defineConfig,
-	GoldstoneError,
 	type InboxConfig,
 	InboxManager,
 	type MailboxConfig,
@@ -13,9 +13,7 @@ function codeOf(run: () => unknown): string | undefined {
 	try {
 		run();
 	} catch (error) {
-		return error instanceof GoldstoneError
-			? error.code
-			: "not a GoldstoneError";
+		return error instanceof Exception ? error.code : "not an Exception";
 	}
 	return undefined;
 }

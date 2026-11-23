@@ -15,11 +15,8 @@ export {
 	type PasswordAuth,
 	type TokenAuth,
 } from "./config.js";
-export {
-	fromEngine,
-	GoldstoneError,
-	GoldstoneNativeRequiredError,
-} from "./errors.js";
+export { fromEngine } from "./engineErrors.js";
+export * as errors from "./errors.js";
 export { InboxManager } from "./InboxManager.js";
 export {
 	type InboundHttpContext,

@@ -1,5 +1,6 @@
+import { Exception } from "@c9up/flare";
 import { afterEach, describe, expect, it } from "vitest";
-import { GoldstoneError, Mailbox } from "../src/index.js";
+import { Mailbox } from "../src/index.js";
 import { ScriptedImap, type SizeAnswer } from "./support/scripted-imap.js";
 import { ScriptedMailbox } from "./support/scripted-mailbox.js";
 
@@ -37,7 +38,9 @@ async function codeOf(run: () => Promise<unknown>): Promise<string> {
 		await run();
 		return "resolved";
 	} catch (error) {
-		return error instanceof GoldstoneError ? error.code : String(error);
+		return error instanceof Exception
+			? (error.code ?? "no code")
+			: String(error);
 	}
 }
 

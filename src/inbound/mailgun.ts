@@ -29,7 +29,8 @@
 import { Buffer } from "node:buffer";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { AuthenticateOptions } from "../authenticity.js";
-import { GoldstoneError } from "../errors.js";
+import { isGoldstoneError } from "../engineErrors.js";
+import { E_GOLDSTONE_INVALID_CONFIG } from "../errors.js";
 import {
 	type Limits,
 	type ParseOptions,
@@ -96,20 +97,18 @@ export function createMailgunInboundHandler(
 	options: MailgunInboundOptions,
 ): Handler {
 	if (!options.signingKey) {
-		throw new GoldstoneError(
-			"E_GOLDSTONE_INVALID_CONFIG",
+		throw new E_GOLDSTONE_INVALID_CONFIG([
 			"createMailgunInboundHandler: signingKey is required to verify Mailgun's signature",
-		);
+		]);
 	}
 	const { signingKey, onMessage } = options;
 	const maxAge = options.maxAgeSeconds ?? 120;
 	// The freshness window is a security switch: NaN or Infinity would turn
 	// the timestamp check and the replay guard off without a word.
 	if (!(Number.isInteger(maxAge) && maxAge >= 1 && maxAge <= MAX_AGE_LIMIT)) {
-		throw new GoldstoneError(
-			"E_GOLDSTONE_INVALID_CONFIG",
+		throw new E_GOLDSTONE_INVALID_CONFIG([
 			`createMailgunInboundHandler: maxAgeSeconds must be an integer from 1 to ${MAX_AGE_LIMIT}, got ${String(maxAge)}`,
-		);
+		]);
 	}
 	const guard = options.replayGuard ?? new MemoryReplayGuard();
 
@@ -182,7 +181,7 @@ export function createMailgunInboundHandler(
 				remoteContent: options.remoteContent,
 			});
 		} catch (error) {
-			if (error instanceof GoldstoneError) {
+			if (isGoldstoneError(error)) {
 				// 406 tells Mailgun not to retry: the same bytes would be refused
 				// again. The token stays taken.
 				ctx.response.status(406).json({ error: error.code });

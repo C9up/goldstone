@@ -151,7 +151,7 @@ input from whoever sent it, so:
   it, keeping only counts, so a message made of millions of tiny parts or
   headers is refused before it costs any memory.
   Each limit has a default and can be set per call
-  (`parseMessage(raw, { limits: { maxBytes } })`); over one, a `GoldstoneError` names it
+  (`parseMessage(raw, { limits: { maxBytes } })`); over one, an error of the `errors` namespace names it
   (`E_GOLDSTONE_MESSAGE_TOO_LARGE`, `…_TOO_MANY_PARTS`, `…_TOO_DEEP`,
   `…_TOO_MANY_HEADERS`, `…_HEADERS_TOO_LARGE`, `…_TOO_MANY_ATTACHMENTS`,
   `…_ATTACHMENT_TOO_LARGE`). A part starts only at a delimiter of the

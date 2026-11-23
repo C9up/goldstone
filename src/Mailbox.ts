@@ -16,7 +16,10 @@
 
 import { ImapFlow, type SearchObject } from "imapflow";
 import { assertSecure, type MailboxConfig } from "./config.js";
-import { GoldstoneError } from "./errors.js";
+import {
+	E_GOLDSTONE_MESSAGE_TOO_LARGE,
+	E_GOLDSTONE_UIDVALIDITY_CHANGED,
+} from "./errors.js";
 import {
 	type Limits,
 	type ParseOptions,
@@ -210,10 +213,7 @@ export class Mailbox {
 					// reconnection, not skipped as if it had failed. A message
 					// over the limit is skipped: it would be refused again.
 					if (!client.usable) {
-						if (
-							error instanceof GoldstoneError &&
-							error.code === "E_GOLDSTONE_MESSAGE_TOO_LARGE"
-						) {
+						if (error instanceof E_GOLDSTONE_MESSAGE_TOO_LARGE) {
 							last = uid;
 						}
 						return;
@@ -231,12 +231,7 @@ export class Mailbox {
 					current = client;
 					const opened = await client.mailboxOpen(folder);
 					if (uidValidity !== undefined && opened.uidValidity !== uidValidity) {
-						report(
-							new GoldstoneError(
-								"E_GOLDSTONE_UIDVALIDITY_CHANGED",
-								`[inbox] ${this.name}/${folder} renumbered its messages; watching resumes from the newest`,
-							),
-						);
+						report(new E_GOLDSTONE_UIDVALIDITY_CHANGED([this.name, folder]));
 						last = undefined;
 					}
 					uidValidity = opened.uidValidity;
@@ -309,10 +304,9 @@ export class Mailbox {
 		);
 		if (!sized) return undefined;
 		if (sized.size !== undefined && sized.size > maxBytes) {
-			throw new GoldstoneError(
-				"E_GOLDSTONE_MESSAGE_TOO_LARGE",
+			throw new E_GOLDSTONE_MESSAGE_TOO_LARGE([
 				`[inbox] message ${uid} is ${sized.size} bytes, over the ${maxBytes} allowed — not downloaded`,
-			);
+			]);
 		}
 		// The server's size is a claim: the connection itself refuses a
 		// literal over the limit, before buffering it.
@@ -325,9 +319,10 @@ export class Mailbox {
 			);
 		} catch (error) {
 			if (oversized(error) || oversized(this.#cutOff.get(client))) {
-				throw new GoldstoneError(
-					"E_GOLDSTONE_MESSAGE_TOO_LARGE",
-					`[inbox] message ${uid} is over the ${maxBytes} bytes allowed, whatever size the server reported — not downloaded`,
+				throw new E_GOLDSTONE_MESSAGE_TOO_LARGE(
+					[
+						`[inbox] message ${uid} is over the ${maxBytes} bytes allowed, whatever size the server reported — not downloaded`,
+					],
 					{ cause: error },
 				);
 			}

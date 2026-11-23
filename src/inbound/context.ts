@@ -3,7 +3,7 @@
  * Ream `HttpContext` fits, and so does a plain object in a test.
  */
 
-import { GoldstoneError } from "../errors.js";
+import { E_GOLDSTONE_INVALID_OPTIONS } from "../errors.js";
 
 export interface InboundResponse {
 	status(code: number): InboundResponse;
@@ -50,10 +50,9 @@ export class MemoryReplayGuard implements ReplayGuard {
 		// NaN would store a time no comparison is ever true of: the token
 		// would be claimable again at once.
 		if (!(Number.isFinite(ttlSeconds) && ttlSeconds > 0)) {
-			throw new GoldstoneError(
-				"E_GOLDSTONE_INVALID_OPTIONS",
+			throw new E_GOLDSTONE_INVALID_OPTIONS([
 				`MemoryReplayGuard: the TTL must be a positive number of seconds, got ${String(ttlSeconds)}`,
-			);
+			]);
 		}
 		const until = this.#tokens.get(token);
 		if (until !== undefined && until > Date.now()) return false;

@@ -1,7 +1,7 @@
 import { ImapFlow } from "imapflow";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-	GoldstoneError,
+	errors,
 	Mailbox,
 	type MailboxConfig,
 	type ReceivedMessage,
@@ -105,7 +105,7 @@ describeImap("Mailbox", () => {
 		await sendMail("frank@example.test", "big", "x".repeat(2_000));
 		const [uid] = await box.search({ all: true });
 		const error = await box.fetch(uid ?? 0).catch((e: unknown) => e);
-		expect(error).toBeInstanceOf(GoldstoneError);
+		expect(error).toBeInstanceOf(errors.E_GOLDSTONE_MESSAGE_TOO_LARGE);
 		expect(error).toMatchObject({ code: "E_GOLDSTONE_MESSAGE_TOO_LARGE" });
 	});
 
