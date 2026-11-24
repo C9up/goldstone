@@ -271,6 +271,65 @@ describe("parseMessage — hostile HTML", () => {
 		expect(m.htmlError?.code).toBe("E_GOLDSTONE_HTML_TOO_COMPLEX");
 	});
 
+	it("measures the depth on the tree the parser builds, whatever hides it from a reading of the markup", async () => {
+		const deep = "<div>".repeat(1_001);
+		for (const markup of [
+			`<!-->${deep}x`,
+			`<!--->${deep}x`,
+			`<textarea><!--</textarea>${deep}x`,
+			`<title><!--</title>${deep}x`,
+			`<style><!--</style>${deep}x`,
+			`${`<b>${"<div>".repeat(900)}</b>`.repeat(9)}x`,
+		]) {
+			const started = performance.now();
+			const m = await parseMessage(html(markup));
+			expect(performance.now() - started).toBeLessThan(200);
+			expect(m.html).toBeUndefined();
+			expect(m.htmlError?.code).toBe("E_GOLDSTONE_HTML_TOO_DEEP");
+		}
+		// A thousand levels are still read.
+		const m = await parseMessage(html(`<!-->${"<div>".repeat(1_000)}x`));
+		expect(m.htmlError).toBeUndefined();
+		expect(m.html).toContain("x");
+	});
+
+	it("answers the largest hostile HTML maxHtmlBytes accepts within a fixed time", async () => {
+		const fill = (prefix: string, body: string) => {
+			let markup = prefix;
+			// The part ends with a line break, which the HTML keeps.
+			while (markup.length + body.length <= 512 * 1024 - 2) markup += body;
+			return markup;
+		};
+		for (const [markup, code] of [
+			[fill("<!-->", "<div>"), "E_GOLDSTONE_HTML_TOO_DEEP"],
+			[fill("<style><!--</style>", "<div>"), "E_GOLDSTONE_HTML_TOO_DEEP"],
+			[fill("", `<b>${"<div>".repeat(900)}</b>`), "E_GOLDSTONE_HTML_TOO_DEEP"],
+			// Stray tags in a table, each placed before it among its siblings.
+			[fill("<table>", "<br>"), "E_GOLDSTONE_HTML_TOO_COMPLEX"],
+			// Blocks moved by misnested formatting, a thousand levels down.
+			[
+				fill("<div>".repeat(990), "<b><div><i></i></b></div>"),
+				"E_GOLDSTONE_HTML_TOO_COMPLEX",
+			],
+		] as const) {
+			const started = performance.now();
+			const m = await parseMessage(html(markup));
+			expect(performance.now() - started).toBeLessThan(500);
+			expect(m.htmlError?.code).toBe(code);
+		}
+	});
+
+	it("sanitizes ordinary HTML padded with character references", async () => {
+		for (const markup of [
+			"&nbsp;".repeat(5_000),
+			`<p>${"&nbsp;".repeat(20)}</p>`.repeat(500),
+		]) {
+			const m = await parseMessage(html(markup));
+			expect(m.htmlError).toBeUndefined();
+			expect(m.html).toContain("&nbsp;");
+		}
+	});
+
 	it("does not sanitize HTML over maxHtmlBytes, and reads the rest", async () => {
 		const m = await parseMessage(html("<p>hello</p>".repeat(100)), {
 			limits: { maxHtmlBytes: 100 },
@@ -372,6 +431,30 @@ describe("parseMessage — remote content", () => {
 		expect(m.html).not.toContain("tracker.evil.test");
 		expect(m.html).toContain('src="cid:logo@corp.test"');
 		expect(m.html).toContain('href="https://evil.test/login"');
+	});
+
+	it("removes URLs without a scheme, which would resolve against the page that shows the mail", async () => {
+		const relative = [
+			'<a href="/account/delete?confirm=1">a</a>',
+			'<a href="../../admin/users/1/promote">b</a>',
+			'<a href="?x=1">c</a>',
+			'<a href="#top">d</a>',
+			'<a href="//evil.test/x">e</a>',
+			'<img src="/logout">',
+			'<form action="/transfer"><button formaction="/x">f</button></form>',
+		].join("");
+		const kept =
+			'<a href="https://example.org/ok">ok</a><img src="cid:logo@x">';
+		for (const remoteContent of ["block", "allow"] as const) {
+			const m = await parseMessage(
+				bytes(`${HEAD}Content-Type: text/html\r\n\r\n${relative}${kept}\r\n`),
+				{ remoteContent },
+			);
+			expect(m.html).not.toMatch(/href="(?!https:)|src="(?!cid:)|action=/);
+			expect(m.html).toContain('<a rel="noopener noreferrer">a</a>');
+			expect(m.html).toContain('href="https://example.org/ok"');
+			expect(m.html).toContain('src="cid:logo@x"');
+		}
 	});
 
 	it("keeps remote content when the application allows it", async () => {

@@ -32,6 +32,16 @@ pub struct Limits {
     pub max_headers: usize,
     /// Size of one header block.
     pub max_header_bytes: usize,
+    /// Size of the header blocks of the parts and carried messages, all
+    /// together: the message's own block is bounded by `max_header_bytes`
+    /// alone. A header can cost many times its size once parsed (a list of
+    /// `a,` costs 25 times), so the total is bounded, not only each block.
+    pub max_part_header_bytes: usize,
+    /// Addresses in the address headers (`From`, `To`, `Cc`, `List-*`…) of
+    /// every header block, groups counted as one more each. Checked before
+    /// the message is parsed: each address is an object the application
+    /// gets, many times the two bytes `a,` it takes to write.
+    pub max_addresses: usize,
     /// Number of attachments.
     pub max_attachments: usize,
     /// Size of one decoded attachment.
@@ -49,6 +59,8 @@ impl Default for Limits {
             max_depth: 32,
             max_headers: 1_000,
             max_header_bytes: 1024 * 1024,
+            max_part_header_bytes: 1024 * 1024,
+            max_addresses: 5_000,
             max_attachments: 100,
             max_attachment_bytes: 25 * 1024 * 1024,
             max_html_bytes: 512 * 1024,
@@ -83,6 +95,15 @@ pub enum ParseError {
         size: usize,
         max: usize,
     },
+    /// The header blocks of the parts, all together.
+    PartHeadersTooLarge {
+        size: usize,
+        max: usize,
+    },
+    TooManyAddresses {
+        count: usize,
+        max: usize,
+    },
     /// Before parsing: multiparts whose boundary never occurs would have the
     /// parser search the rest of the message for each of them.
     MissingBoundaries {
@@ -115,6 +136,12 @@ pub enum ParseError {
     HtmlTooComplex {
         max: usize,
     },
+    /// Placing the HTML's nodes and measuring their depth takes more steps
+    /// than this: stray tags in a table, each placed before it, or subtrees
+    /// moved deep in the tree.
+    HtmlTooTangled {
+        max: usize,
+    },
 }
 
 impl ParseError {
@@ -128,14 +155,19 @@ impl ParseError {
             Self::TooManyHeaders { .. } | Self::TooManyHeaderFields { .. } => {
                 "E_GOLDSTONE_TOO_MANY_HEADERS"
             }
-            Self::HeadersTooLarge { .. } | Self::UnendedHeaders => "E_GOLDSTONE_HEADERS_TOO_LARGE",
+            Self::HeadersTooLarge { .. }
+            | Self::PartHeadersTooLarge { .. }
+            | Self::UnendedHeaders => "E_GOLDSTONE_HEADERS_TOO_LARGE",
+            Self::TooManyAddresses { .. } => "E_GOLDSTONE_TOO_MANY_ADDRESSES",
             Self::MissingBoundaries { .. } => "E_GOLDSTONE_MISSING_BOUNDARIES",
             Self::BoundaryTooLong { .. } => "E_GOLDSTONE_BOUNDARY_TOO_LONG",
             Self::TooManyAttachments { .. } => "E_GOLDSTONE_TOO_MANY_ATTACHMENTS",
             Self::AttachmentTooLarge { .. } => "E_GOLDSTONE_ATTACHMENT_TOO_LARGE",
             Self::HtmlTooLarge { .. } => "E_GOLDSTONE_HTML_TOO_LARGE",
             Self::HtmlTooDeep { .. } => "E_GOLDSTONE_HTML_TOO_DEEP",
-            Self::HtmlTooComplex { .. } => "E_GOLDSTONE_HTML_TOO_COMPLEX",
+            Self::HtmlTooComplex { .. } | Self::HtmlTooTangled { .. } => {
+                "E_GOLDSTONE_HTML_TOO_COMPLEX"
+            }
         }
     }
 }
@@ -167,6 +199,14 @@ impl fmt::Display for ParseError {
                 f,
                 "a header block is {size} bytes, over the {max} allowed"
             ),
+            Self::PartHeadersTooLarge { size, max } => write!(
+                f,
+                "the header blocks of the parts are {size} bytes in all, over the {max} allowed"
+            ),
+            Self::TooManyAddresses { count, max } => write!(
+                f,
+                "the address headers hold {count} addresses, over the {max} allowed"
+            ),
             Self::MissingBoundaries { scanned, max } => write!(
                 f,
                 "multipart boundaries that never occur would have the parser scan {scanned} bytes, over the {max} allowed"
@@ -195,6 +235,10 @@ impl fmt::Display for ParseError {
             Self::HtmlTooComplex { max } => write!(
                 f,
                 "the HTML body builds more than {max} nodes, out of proportion to its markup"
+            ),
+            Self::HtmlTooTangled { max } => write!(
+                f,
+                "placing the HTML body's nodes takes more than {max} steps, out of proportion to its markup"
             ),
         }
     }
@@ -237,7 +281,7 @@ pub struct Message {
     pub headers: Vec<(String, String)>,
     pub text: Option<String>,
     /// Sanitized for display: no script, no event handler, no
-    /// `javascript:` URL.
+    /// `javascript:` URL, no URL without a scheme (see [`html::sanitize`]).
     pub html: Option<String>,
     /// Why there is no `html` although the message has an HTML body: it
     /// broke a bound of [`html::check`], and was not sanitized.

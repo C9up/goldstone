@@ -38,7 +38,9 @@
 
 use crate::{Limits, ParseError};
 use mail_parser::parsers::MessageStream;
-use mail_parser::{ContentType, GetHeader, Header, HeaderName, HeaderValue, MessageParser};
+use mail_parser::{
+    Address, ContentType, GetHeader, Header, HeaderName, HeaderValue, MessageParser,
+};
 
 /// mail-parser parses an encoded message/* part this many levels down
 /// (its `MAX_NESTED_ENCODED`).
@@ -61,12 +63,17 @@ const MAX_BOUNDARY_BYTES: usize = 256;
 pub(crate) struct Counts {
     pub parts: usize,
     pub fields: usize,
+    pub addresses: usize,
 }
 
 struct Budget {
     counts: Counts,
     max_parts: usize,
     max_fields: usize,
+    max_addresses: usize,
+    /// Bytes of the header blocks after the message's own.
+    part_header_bytes: usize,
+    max_part_header_bytes: usize,
     /// Bytes scanned by the boundary searches that found nothing.
     searched: usize,
     max_searched: usize,
@@ -79,6 +86,31 @@ impl Budget {
             return Err(ParseError::MissingBoundaries {
                 scanned: self.searched,
                 max: self.max_searched,
+            });
+        }
+        Ok(())
+    }
+
+    /// A header block of a part or a carried message, before it is parsed.
+    fn add_part_header_bytes(&mut self, bytes: usize) -> Result<(), ParseError> {
+        self.part_header_bytes = self.part_header_bytes.saturating_add(bytes);
+        if self.part_header_bytes > self.max_part_header_bytes {
+            return Err(ParseError::PartHeadersTooLarge {
+                size: self.part_header_bytes,
+                max: self.max_part_header_bytes,
+            });
+        }
+        Ok(())
+    }
+
+    /// The addresses a parsed header block holds, counted before the
+    /// message is parsed as a whole.
+    fn add_addresses(&mut self, headers: &[Header<'_>]) -> Result<(), ParseError> {
+        self.counts.addresses = self.counts.addresses.saturating_add(addresses_in(headers));
+        if self.counts.addresses > self.max_addresses {
+            return Err(ParseError::TooManyAddresses {
+                count: self.counts.addresses,
+                max: self.max_addresses,
             });
         }
         Ok(())
@@ -101,6 +133,20 @@ impl Budget {
         }
         Ok(())
     }
+}
+
+/// The addresses parsed header fields hold, and the groups they make.
+fn addresses_in(headers: &[Header<'_>]) -> usize {
+    headers
+        .iter()
+        .map(|header| match &header.value {
+            HeaderValue::Address(Address::List(list)) => list.len(),
+            HeaderValue::Address(Address::Group(groups)) => groups
+                .iter()
+                .fold(groups.len(), |n, group| n + group.addresses.len()),
+            _ => 0,
+        })
+        .sum()
 }
 
 /// The media types the walk tells apart: the ones that change where the next
@@ -139,6 +185,9 @@ pub(crate) fn count(raw: &[u8], limits: &Limits) -> Result<Counts, ParseError> {
             .max_parts
             .saturating_mul(FIELDS_PER_PART)
             .saturating_add(limits.max_headers),
+        max_addresses: limits.max_addresses,
+        part_header_bytes: 0,
+        max_part_header_bytes: limits.max_part_header_bytes,
         searched: 0,
         max_searched: limits.max_bytes.saturating_mul(FAILED_SEARCH_SCANS),
     };
@@ -194,9 +243,17 @@ fn walk(
     let mut stack: Vec<(State, Option<usize>)> = Vec::new();
 
     let mut first = true;
-    'outer: while let Some(headers) =
-        header_block(&parser, &mut stream, data, first, limits, budget)?
-    {
+    'outer: while let Some(headers) = header_block(
+        &parser,
+        &mut stream,
+        data,
+        Block {
+            first,
+            own: first && base == 0,
+        },
+        limits,
+        budget,
+    )? {
         first = false;
         // Each multipart and carried message around a part is one level.
         let depth = base + stack.len();
@@ -328,22 +385,36 @@ fn walk(
     Ok(())
 }
 
+/// Which header block [`header_block`] reads.
+#[derive(Clone, Copy)]
+struct Block {
+    /// The first block of the bytes being walked: a message's.
+    first: bool,
+    /// The received message's own block, not a part's nor a carried
+    /// message's: the one block outside `max_part_header_bytes`.
+    own: bool,
+}
+
 /// The header block at the stream's position, read by mail-parser once its
 /// lines are known to fit the limits; `None` when the bytes end inside it,
-/// where mail-parser stops too. `first`: the message's own header block.
+/// where mail-parser stops too.
 fn header_block<'x>(
     parser: &MessageParser,
     stream: &mut MessageStream<'x>,
     data: &'x [u8],
-    first: bool,
+    Block { first, own }: Block,
     limits: &Limits,
     budget: &mut Budget,
 ) -> Result<Option<Vec<Header<'x>>>, ParseError> {
     let start = stream.offset();
     let end = block_end(data, start, limits)?;
+    if !own {
+        budget.add_part_header_bytes(end - start)?;
+    }
     let mut block = MessageStream::new(&data[start..end]);
     let mut headers = Vec::new();
     let ended = block.parse_headers(parser, &mut headers);
+    budget.add_addresses(&headers)?;
     if !ended && end < data.len() {
         // mail-parser would read on past the line that ends the block for
         // RFC 5322, past what was measured.
@@ -431,6 +502,7 @@ mod tests {
             counts.parts += message.parts.len();
             for part in &message.parts {
                 counts.fields += part.headers.len();
+                counts.addresses += addresses_in(&part.headers);
                 if let PartType::Message(carried) = &part.body {
                     messages.push(carried);
                 }
@@ -526,7 +598,9 @@ mod tests {
             drop(message);
             let (walked, built) = (walked(raw.as_bytes()), built(raw.as_bytes()));
             assert!(
-                walked.parts >= built.parts && walked.fields >= built.fields,
+                walked.parts >= built.parts
+                    && walked.fields >= built.fields
+                    && walked.addresses >= built.addresses,
                 "{raw:?}: {walked:?} {built:?}"
             );
         }
@@ -558,7 +632,8 @@ mod tests {
                 walked(raw.as_bytes()),
                 Counts {
                     parts: 1,
-                    fields: 4
+                    fields: 4,
+                    addresses: 2,
                 }
             );
         }
@@ -605,6 +680,100 @@ mod tests {
                     max: 1_000
                 }),
                 "{carrier}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_addresses_of_every_block_are_counted_before_the_parse() {
+        let limits = Limits::default();
+        let to = |n: usize| vec!["a@b.test"; n].join(",");
+        // From holds one, To the rest: 5 000 pass, 5 001 do not.
+        let raw = format!("From: x@y.test\r\nTo: {}\r\n\r\nbody\r\n", to(4_999));
+        assert_eq!(
+            count(raw.as_bytes(), &limits).map(|c| c.addresses),
+            Ok(5_000)
+        );
+        let raw = format!("From: x@y.test\r\nTo: {}\r\n\r\nbody\r\n", to(5_000));
+        assert_eq!(
+            count(raw.as_bytes(), &limits),
+            Err(ParseError::TooManyAddresses {
+                count: 5_001,
+                max: 5_000
+            })
+        );
+        // Spread over the parts' Cc, a group's members and its name, and a
+        // carried message in base64: each counts towards the one total.
+        let few = Limits {
+            max_addresses: 20,
+            ..Limits::default()
+        };
+        let carried = base64(format!("From: c@d.test\r\nCc: {}\r\n\r\nx\r\n", to(8)).as_bytes());
+        let raw = format!(
+            "{HEAD}Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\nCc: {}\r\n\r\nx\r\n--b\r\nTo: team: a@b.test, c@d.test;\r\n\r\nx\r\n--b\r\nContent-Type: message/rfc822\r\nContent-Transfer-Encoding: base64\r\n\r\n{carried}\r\n--b--\r\n",
+            to(4)
+        );
+        // HEAD 2, the part's Cc 4, the group 2 and itself, the carried 1 + 8.
+        assert_eq!(
+            count(raw.as_bytes(), &Limits::default()).map(|c| c.addresses),
+            Ok(18)
+        );
+        assert_eq!(
+            walked(raw.as_bytes()).addresses,
+            built(raw.as_bytes()).addresses
+        );
+        let fewer = Limits {
+            max_addresses: 17,
+            ..few
+        };
+        assert!(count(raw.as_bytes(), &few).is_ok());
+        assert_eq!(
+            count(raw.as_bytes(), &fewer),
+            Err(ParseError::TooManyAddresses { count: 18, max: 17 })
+        );
+    }
+
+    #[test]
+    fn the_header_blocks_of_the_parts_are_bounded_together() {
+        let limits = Limits {
+            max_part_header_bytes: 4_096,
+            ..Limits::default()
+        };
+        let pad = |bytes: usize| format!("X-Pad: {}\r\n", "p".repeat(bytes));
+        let part = |bytes: usize| format!("--b\r\n{}\r\nx\r\n", pad(bytes));
+        let message = |own: usize, parts: &[usize]| {
+            let body: String = parts.iter().map(|&n| part(n)).collect();
+            format!(
+                "{HEAD}{}Content-Type: multipart/mixed; boundary=b\r\n\r\n{body}--b--\r\n",
+                pad(own)
+            )
+        };
+        // The message's own block is outside the total: max_header_bytes
+        // bounds it alone.
+        assert!(count(message(100_000, &[1_000, 1_000]).as_bytes(), &limits).is_ok());
+        // Each part fits, not all of them together.
+        assert!(matches!(
+            count(message(10, &[1_500, 1_500, 1_500]).as_bytes(), &limits),
+            Err(ParseError::PartHeadersTooLarge { max: 4_096, .. })
+        ));
+        // A carried message's block is a part's, encoded or not.
+        let inner = format!("From: c@d.test\r\n{}\r\nx\r\n", pad(5_000));
+        for carried in [
+            format!("Content-Type: message/rfc822\r\n\r\n{inner}"),
+            format!(
+                "Content-Type: message/rfc822\r\nContent-Transfer-Encoding: base64\r\n\r\n{}",
+                base64(inner.as_bytes())
+            ),
+        ] {
+            let raw = format!(
+                "{HEAD}Content-Type: multipart/mixed; boundary=b\r\n\r\n--b\r\n{carried}\r\n--b--\r\n"
+            );
+            assert!(
+                matches!(
+                    count(raw.as_bytes(), &limits),
+                    Err(ParseError::PartHeadersTooLarge { .. })
+                ),
+                "{carried:.60}"
             );
         }
     }

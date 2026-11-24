@@ -12,6 +12,8 @@ export interface JsLimits {
 	maxDepth?: number;
 	maxHeaders?: number;
 	maxHeaderBytes?: number;
+	maxPartHeaderBytes?: number;
+	maxAddresses?: number;
 	maxAttachments?: number;
 	maxAttachmentBytes?: number;
 	maxHtmlBytes?: number;

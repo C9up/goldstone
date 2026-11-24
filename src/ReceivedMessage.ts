@@ -43,6 +43,19 @@ export interface Limits {
 	maxHeaders?: number;
 	/** Size of one header block. Default 1 MiB. */
 	maxHeaderBytes?: number;
+	/**
+	 * Size of the header blocks of the parts and carried messages, all
+	 * together; the message's own block is bounded by `maxHeaderBytes`
+	 * alone. Default 1 MiB.
+	 */
+	maxPartHeaderBytes?: number;
+	/**
+	 * Addresses in the address headers (`From`, `To`, `Cc`, `Bcc`,
+	 * `Reply-To`, `Sender`, `Resent-*`, `List-*`) of every header block, the
+	 * parts' and carried messages' included; a group counts as one more.
+	 * Checked before the message is parsed. Default 5 000.
+	 */
+	maxAddresses?: number;
 	/** Number of attachments. Default 100. */
 	maxAttachments?: number;
 	/** Size of one decoded attachment. Default 25 MiB. */
@@ -98,7 +111,11 @@ export class ReceivedMessage {
 	readonly text?: string;
 	/**
 	 * Sanitized for display: no script, no event handler, no `javascript:`
-	 * URL, and no remote content unless `remoteContent: "allow"`.
+	 * URL, no remote content unless `remoteContent: "allow"`, and no URL
+	 * without a scheme (`/path`, `../x`, `//host`, `#id`): a mail has no base
+	 * URL in the page that shows it, so such a URL would point into the
+	 * application. To resolve them against a base, start from
+	 * {@link unsanitizedHtml}.
 	 */
 	readonly html?: string;
 	/**
@@ -172,6 +189,8 @@ const LIMIT_KEYS = [
 	"maxDepth",
 	"maxHeaders",
 	"maxHeaderBytes",
+	"maxPartHeaderBytes",
+	"maxAddresses",
 	"maxAttachments",
 	"maxAttachmentBytes",
 	"maxHtmlBytes",

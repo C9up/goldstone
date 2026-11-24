@@ -48,8 +48,13 @@ describe("createMailgunInboundHandler — on a Ream route", () => {
 
 	beforeAll(async () => {
 		const serverFactory = createHyperServerFactory();
+		// ream 0.2.32 and later throw a coded error naming the package to
+		// install; the 0.2.26 to 0.2.31 this package still accepts return
+		// undefined, which Ignitor would only report as a missing serverFactory.
 		if (serverFactory === undefined) {
-			throw new Error("no prebuilt Ream server binary for this platform");
+			throw new Error(
+				"@c9up/ream found no loadable HTTP server binary for this platform (ream before 0.2.32 does not say why: upgrade it to see the coded error)",
+			);
 		}
 		const handler = createMailgunInboundHandler({
 			signingKey: KEY,

@@ -149,11 +149,16 @@ input from whoever sent it, so:
   carries (message/rfc822), encoded or not. Parts and headers are bounded
   before the parse too: the message is first walked the way the parser walks
   it, keeping only counts, so a message made of millions of tiny parts or
-  headers is refused before it costs any memory.
+  headers is refused before it costs any memory. The same walk counts the
+  addresses of the address headers (`maxAddresses`, 5 000 by default) and the
+  header bytes of all the parts together (`maxPartHeaderBytes`, 1 MiB): a
+  list like `To: a,a,a,…` costs many times its size once parsed, so it is
+  refused before the message is.
   Each limit has a default and can be set per call
   (`parseMessage(raw, { limits: { maxBytes } })`); over one, an error of the `errors` namespace names it
   (`E_GOLDSTONE_MESSAGE_TOO_LARGE`, `…_TOO_MANY_PARTS`, `…_TOO_DEEP`,
-  `…_TOO_MANY_HEADERS`, `…_HEADERS_TOO_LARGE`, `…_TOO_MANY_ATTACHMENTS`,
+  `…_TOO_MANY_HEADERS`, `…_HEADERS_TOO_LARGE`, `…_TOO_MANY_ADDRESSES`,
+  `…_TOO_MANY_ATTACHMENTS`,
   `…_ATTACHMENT_TOO_LARGE`). A part starts only at a delimiter of the
   boundary its multipart declared, or after the header of a carried message:
   a `-- ` signature, a pasted log or a large attachment is body, whatever it
@@ -166,7 +171,10 @@ input from whoever sent it, so:
   and nothing a browser would load by itself: remote images, backgrounds and
   posters are removed, because loading one tells the sender the message was
   opened, when and from where. `cid:` references to the message's own parts
-  stay, and so do links, which are only followed when clicked. An application
+  stay, and so do links, which are only followed when clicked. A URL without
+  a scheme (`/account/delete`, `../admin`, `//host/x`, `#top`) is removed,
+  link or not: a mail has no base URL in the page that shows it, so it would
+  point into the application displaying the mail. An application
   that shows remote content on purpose passes `remoteContent: "allow"` (to
   `parseMessage`, `readMessage`, the inbox config or the Mailgun handler).
   The HTML as received is only reachable through `unsanitizedHtml()`, for what
@@ -174,7 +182,9 @@ input from whoever sent it, so:
 - **the HTML is bounded before it is sanitized**: over `maxHtmlBytes`
   (512 KiB by default), nested deeper than 1 000 elements, or building a tree
   out of proportion to its markup, it is not sanitized at all — the HTML
-  standard's tree building costs more than linear time on such markup.
+  standard's tree building costs more than linear time on such markup. The
+  depth and the size are measured on the tree the HTML parser builds, not on
+  a reading of the markup, so a comment or a misnested tag hides nothing.
   `html` is then absent and `htmlError` says why
   (`E_GOLDSTONE_HTML_TOO_LARGE`, `…_HTML_TOO_DEEP`, `…_HTML_TOO_COMPLEX`);
   the message, its text and its attachments are read as usual;
@@ -186,7 +196,7 @@ input from whoever sent it, so:
   override cannot dress `fdp.exe` up as `exe.pdf`. What the sender wrote stays in `originalName`, for display only.
 
 The engine is a native binary, prebuilt for Linux, macOS and Windows; there is
-no JavaScript fallback.
+no JavaScript fallback (see [The engine](#the-engine)).
 
 ## Who sent it
 
@@ -233,6 +243,40 @@ await authenticate(raw, { ip: "203.0.113.7", helo: "mx.sender.test", mailFrom: "
   reliably, so SPF is `none` there and DMARC rests on DKIM.
 - Turn it off with `authenticate: false` in `config/inbox.ts`, or
   `readMessage(raw, { authenticate: false })`; `parseMessage()` never checks.
+
+## The engine
+
+Received mail is parsed by a Rust engine, loaded as a prebuilt `.node`.
+Each platform's engine is its own npm package, which `@c9up/goldstone` lists
+as an optional dependency at its exact version:
+
+| Platform | Package |
+|---|---|
+| Linux x64 (glibc) | `@c9up/goldstone-linux-x64-gnu` |
+| Linux arm64 (glibc) | `@c9up/goldstone-linux-arm64-gnu` |
+| macOS x64 | `@c9up/goldstone-darwin-x64` |
+| macOS arm64 | `@c9up/goldstone-darwin-arm64` |
+| Windows x64 | `@c9up/goldstone-win32-x64-msvc` |
+
+Your package manager installs only the one that matches the machine (`os`,
+`cpu` and `libc` fields), so an install downloads one binary and needs no Rust
+toolchain. An install run with optional dependencies omitted
+(`--no-optional`, `--omit=optional`) skips it.
+
+There is no JavaScript fallback. If the engine is missing, the first parse throws
+`E_GOLDSTONE_NATIVE_REQUIRED`, naming the package to install:
+
+```text
+Fix: install @c9up/goldstone-linux-x64-gnu at the exact version of @c9up/goldstone: ...
+```
+
+The load error itself is the exception's `cause`, not part of its message.
+
+In a checkout of this repository, `pnpm build:napi` builds
+`index.<platform>.node` at the package root, and goldstone loads that file before
+looking for the platform package. `node scripts/platform-packages.mjs` rewrites
+the platform packages' manifests (`npm/<platform>/package.json`) and the
+optional dependencies after a version bump; CI fails when they are stale.
 
 ## License
 

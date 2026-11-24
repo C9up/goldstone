@@ -18,6 +18,8 @@ pub struct JsLimits {
     pub max_depth: Option<u32>,
     pub max_headers: Option<u32>,
     pub max_header_bytes: Option<u32>,
+    pub max_part_header_bytes: Option<u32>,
+    pub max_addresses: Option<u32>,
     pub max_attachments: Option<u32>,
     pub max_attachment_bytes: Option<u32>,
     pub max_html_bytes: Option<u32>,
@@ -97,6 +99,12 @@ fn limits_of(limits: Option<JsLimits>) -> Limits {
         }
         if let Some(v) = l.max_header_bytes {
             out.max_header_bytes = v as usize;
+        }
+        if let Some(v) = l.max_part_header_bytes {
+            out.max_part_header_bytes = v as usize;
+        }
+        if let Some(v) = l.max_addresses {
+            out.max_addresses = v as usize;
         }
         if let Some(v) = l.max_attachments {
             out.max_attachments = v as usize;

@@ -45,10 +45,20 @@ export const E_GOLDSTONE_TOO_MANY_HEADERS = createError<[string]>(
 	422,
 );
 
-/** A header block is over the size limit. */
+/**
+ * A header block is over `maxHeaderBytes`, or the parts' header blocks are
+ * over `maxPartHeaderBytes` together.
+ */
 export const E_GOLDSTONE_HEADERS_TOO_LARGE = createError<[string]>(
 	"%s",
 	"E_GOLDSTONE_HEADERS_TOO_LARGE",
+	422,
+);
+
+/** The address headers hold more addresses than `maxAddresses`. */
+export const E_GOLDSTONE_TOO_MANY_ADDRESSES = createError<[string]>(
+	"%s",
+	"E_GOLDSTONE_TOO_MANY_ADDRESSES",
 	422,
 );
 
@@ -137,10 +147,12 @@ export const E_GOLDSTONE_INSECURE_CONNECTION = createError<[string]>(
 	"E_GOLDSTONE_INSECURE_CONNECTION",
 );
 
-/** The Rust mail engine is not loaded. */
-export const E_GOLDSTONE_NATIVE_REQUIRED = createError<[string]>(
-	"The Rust mail engine is required but not loaded — %s.\n" +
-		"Install the prebuilt binary for this platform, or build it with `pnpm build:napi`.",
+/**
+ * The Rust mail engine is not loaded. The message names the platform package
+ * to install; the load error is its `cause`.
+ */
+export const E_GOLDSTONE_NATIVE_REQUIRED = createError<[fix: string]>(
+	"The Rust mail engine is required but not loaded.\n  Fix: %s",
 	"E_GOLDSTONE_NATIVE_REQUIRED",
 );
 
